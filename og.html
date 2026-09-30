@@ -1,0 +1,23 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+body { margin:0; width:1200px; height:630px; background:#0f1220; color:#e6e8f0; font:16px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; overflow:hidden; position:relative }
+.top { display:flex; align-items:center; gap:14px; padding:26px 44px 0 } .top .name { font-size:34px; font-weight:800; letter-spacing:.3px } .top .sub { color:#8b90a8; font-size:16px; margin-top:6px }
+.row { display:flex; align-items:center; gap:14px; padding:64px 44px 0 } .blk { width:150px; height:150px; border-radius:12px; padding:12px 13px; display:flex; flex-direction:column; justify-content:space-between; box-shadow:0 10px 24px rgba(0,0,0,.45) } .blk .h { font-weight:700; font-size:16px } .blk .r { font-size:13.5px; opacity:.95 } .blk .s { font-size:12px; opacity:.85; line-height:1.35 }
+.div { width:0; height:170px; border-left:3px dashed #2a2f47; margin:0 10px; position:relative } .div::after { content:"chain tip"; position:absolute; top:-22px; left:-30px; font-size:12px; color:#8b90a8; white-space:nowrap }
+.p1 { background:linear-gradient(160deg,hsl(90 70% 55%),hsl(90 70% 38%)) } .p2 { background:linear-gradient(160deg,hsl(150 70% 55%),hsl(150 70% 38%)) } .p3 { background:linear-gradient(160deg,hsl(200 70% 55%),hsl(200 70% 38%)) } .m { background:linear-gradient(160deg,#5a4bd1,#3b2f9b) }
+.foot { position:absolute; left:44px; right:44px; bottom:34px; display:flex; justify-content:space-between; align-items:flex-end } .foot .l { font-size:20px; line-height:1.4; max-width:760px } .foot .l b { color:#f0a04b } .foot .r { color:#8b90a8; font-size:14px; text-align:right; line-height:1.5 }
+.bars { position:absolute; right:44px; top:396px; display:flex; align-items:flex-end; gap:5px; height:80px } .bars i { display:block; width:14px; background:#4a90e2; border-radius:3px 3px 0 0; opacity:.9 }
+.stats { position:absolute; left:44px; top:396px; display:flex; gap:34px } .stats div { display:flex; flex-direction:column; gap:2px } .stats b { font-size:26px; font-weight:700; font-family:ui-monospace,Menlo,monospace } .stats span { color:#8b90a8; font-size:13px; text-transform:uppercase; letter-spacing:.6px }
+</style></head><body>
+<div class="top"><svg width="56" height="56" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#1e2236"/><path d="M6 22c4-10 8-10 10 0s6 10 10 0" fill="none" stroke="#f0a04b" stroke-width="3" stroke-linecap="round"/></svg><div><div class="name">Bight</div><div class="sub">a mempool monitor in a browser tab · txbt4, the BLAKE2b testnet4</div></div></div>
+<div class="row">
+  <div class="blk p3"><div><div class="h">in ~60 min</div><div class="r">~12.0 sat/vB</div></div><div class="s">8 – 19 sat/vB<br>41,208 vB · 96 tx<br>498,110 sat fees</div></div>
+  <div class="blk p2"><div><div class="h">in ~40 min</div><div class="r">~48.5 sat/vB</div></div><div class="s">19 – 101 sat/vB<br>198,530 vB · 412 tx<br>9,240,004 sat fees</div></div>
+  <div class="blk p1"><div><div class="h">next block</div><div class="r">~100.5 sat/vB</div></div><div class="s">101 – 362 sat/vB<br>2,133 vB · 12 tx<br>324,900 sat fees · as built</div></div>
+  <div class="div"></div>
+  <div class="blk m"><div><div class="h">152,069</div><div class="r">~100.5 sat/vB</div></div><div class="s">870 B · 3 tx<br>2 of 2 seen first<br>12 min ago · 04:57 PM</div></div>
+  <div class="blk m"><div><div class="h">152,068</div><div class="r">~361.7 sat/vB</div></div><div class="s">1,040 B · 3 tx<br>2 of 2 seen first<br>33 min ago · 04:37 PM</div></div>
+</div>
+<div class="stats"><div><b>12</b><span>transactions</span></div><div><b>2,133 vB</b><span>size</span></div><div><b>324,900 sat</b><span>fees waiting</span></div><div><b>100.5</b><span>median sat/vB</span></div><div><b>12 · 12 · 0</b><span>heard · accepted · refused</span></div></div>
+<div class="bars"><i style="height:6px"></i><i style="height:10px"></i><i style="height:4px"></i><i style="height:18px"></i><i style="height:12px"></i><i style="height:30px"></i><i style="height:80px"></i><i style="height:22px"></i><i style="height:9px"></i><i style="height:14px"></i><i style="height:5px"></i></div>
+<div class="foot"><div class="l">Every transaction on the page was <b>validated by the tab's own node</b>, and the next block is the one <b>this tab would build</b>.</div><div class="r">bitcoin-blake.github.io/bight<br>a node in a tab · nothing relayed onward</div></div>
+</body></html>
