@@ -3,7 +3,7 @@
 // blocks the tab itself would build from its own mempool, the last blocks it validated, the fee bands, the sources,
 // a graph over the session, and a search. Every transaction shown was validated here; nothing is relayed onward.
 const $ = (id) => document.getElementById(id);
-const NODE = 'https://cdn.jsdelivr.net/gh/bitcoin-blake/blaketestnode@c6cbed10adac743a9e6721dbf0c193d17ae68731';
+const NODE = 'https://cdn.jsdelivr.net/gh/bitcoin-blake/blaketestnode@5befed46b68644185a24b00efb2aae749ffabb3d';
 const { createTabNode, mib, n } = await import(`${NODE}/browser/tabnode.js`);
 const LS = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 const q = new URLSearchParams(location.search);
@@ -87,4 +87,4 @@ $('o-cancel').onclick = () => $('dlg').close();
 $('o-wipe').onclick = () => { if ($('o-wipe').dataset.armed) { tn.wipe(); $('o-wipenote').textContent = 'wiping; the next visit fetches the snapshot again'; delete $('o-wipe').dataset.armed; } else { $('o-wipe').dataset.armed = '1'; $('o-wipenote').textContent = 'press again to remove it (Reef in this browser loses it too)'; } };
 $('o-ok').onclick = () => { OPT.torrent = $('o-torrent').checked; OPT.seed = $('o-seed').checked; LS.set('bight:options', JSON.stringify(OPT)); tn.setTorrent(OPT.torrent); tn.setSeed(OPT.seed); const s = $('o-snapshot').value.trim(), b = $('o-blocks').value.trim(); const reload = (s && s !== SNAP_URL) || (b && b !== BLOCKS_URL); if (s) LS.set('bight:snapshot', s); if (b) LS.set('bight:blocks', b); $('dlg').close(); if (reload) location.search = ''; };
 
-try { await tn.start(); } catch (e) { $('syncmsg').textContent = 'Error: could not start the node: ' + e.message; node.error = e.message; pill(); }
+try { if (await tn.start() === false) $('syncmsg').textContent = 'idle: the node runs in another tab of this browser (Reef, Bight, Winch or Hitch); close that tab and reload here'; } catch (e) { $('syncmsg').textContent = 'Error: could not start the node: ' + e.message; node.error = e.message; pill(); }
