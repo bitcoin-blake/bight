@@ -7,30 +7,137 @@
 <meta name="description" content="A mempool monitor in a browser tab for txbt4, the BLAKE2b testnet4: every transaction shown was validated by the tab's own node, and the next block is the one this tab would build.">
 <meta property="og:site_name" content="Bight"><meta property="og:title" content="Bight · a mempool in a tab"><meta property="og:description" content="A mempool monitor that validates every transaction itself, in the browser. The next block on the page is the one this tab would build. BLAKE2b testnet4."><meta property="og:type" content="website"><meta property="og:url" content="https://bitcoin-blake.github.io/bight/"><meta property="og:image" content="https://bitcoin-blake.github.io/bight/og.png"><meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23171a2b'/%3E%3Cpath d='M6 22c4-10 8-10 10 0s6 10 10 0' fill='none' stroke='%23f0a04b' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+<script>(function(){try{var t=localStorage.getItem('bight:theme');if(t!=='light'&&t!=='dark')t=matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';document.documentElement.dataset.theme=t;}catch(e){document.documentElement.dataset.theme='dark';}})();</script>
 <style>
-:root { --bg:#0f1220; --panel:#171a2b; --panel2:#1e2236; --line:#2a2f47; --text:#e6e8f0; --mut:#8b90a8; --acc:#f0a04b; --blue:#4a90e2; --purple:#5a4bd1; --green:#3ec28f; --red:#e5605a; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace }
-* { box-sizing:border-box } html,body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif } a { color:var(--blue) }
-.top { display:flex; align-items:center; gap:18px; padding:10px 18px; border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:5 } .top .brand { display:flex; align-items:center; gap:10px; font-weight:700; font-size:18px; letter-spacing:.3px } .top .brand span { color:var(--mut); font-weight:400; font-size:12.5px } .top .fill { flex:1 }
-.pill { display:inline-flex; align-items:center; gap:7px; padding:4px 10px; border-radius:999px; background:var(--panel2); border:1px solid var(--line); font-size:12.5px; white-space:nowrap } .pill i { width:8px; height:8px; border-radius:50%; background:var(--mut) } .pill i.sync { background:var(--acc); animation:tp 1.2s ease-in-out infinite } .pill i.ok { background:var(--green) } .pill i.bad { background:var(--red) } @keyframes tp { 0%,100% { opacity:1 } 50% { opacity:.3 } }
-.search { display:flex; gap:6px } .search input { width:360px; max-width:40vw; padding:6px 10px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); font:inherit; font-family:var(--mono); font-size:12.5px } .search button, .btn { padding:6px 12px; border:1px solid var(--line); border-radius:6px; background:var(--panel2); color:var(--text); font:inherit; cursor:pointer } .btn:hover, .search button:hover { border-color:var(--mut) }
-main { padding:16px 18px 40px; max-width:1500px; margin:0 auto }
-h2 { font-size:12.5px; text-transform:uppercase; letter-spacing:.8px; color:var(--mut); margin:0 0 10px; font-weight:600 }
-.blocksrow { display:flex; align-items:stretch; gap:14px; overflow-x:auto; padding:6px 2px 14px } .blocks { display:flex; gap:10px } .blocks.proj { flex-direction:row-reverse } .divider { width:0; border-left:2px dashed var(--line); position:relative; margin:0 6px } .divider::after { content:"chain tip"; position:absolute; top:-2px; left:8px; font-size:10.5px; color:var(--mut); white-space:nowrap }
-.blk { width:132px; min-width:132px; height:132px; border-radius:8px; padding:9px 10px; display:flex; flex-direction:column; justify-content:space-between; cursor:pointer; position:relative; transition:transform .15s; box-shadow:0 8px 18px rgba(0,0,0,.35) } .blk:hover { transform:translateY(-3px) } .blk .h { font-weight:700; font-size:13.5px } .blk .r { font-size:12px; opacity:.95 } .blk .s { font-size:11px; opacity:.8 } .blk.mined { background:linear-gradient(160deg,#5a4bd1,#3b2f9b); } .blk.proj { background:linear-gradient(160deg,var(--c1),var(--c2)) } .blk.empty { background:var(--panel2); border:1px dashed var(--line); box-shadow:none; color:var(--mut) } .blk.sel { outline:2px solid var(--acc) }
-.grid { display:grid; grid-template-columns:1.1fr 1fr 1.3fr; gap:14px; margin-top:6px } @media (max-width:1100px) { .grid { grid-template-columns:1fr 1fr } } @media (max-width:760px) { .grid { grid-template-columns:1fr } }
-.panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px } .kv { display:grid; grid-template-columns:auto 1fr; gap:5px 14px; font-size:13px } .kv .l { color:var(--mut) } .kv .v { font-family:var(--mono); text-align:right } .mut { color:var(--mut) } .mono { font-family:var(--mono) }
-.hist { display:flex; align-items:flex-end; gap:3px; height:90px; margin-top:12px } .hist div { flex:1; background:var(--blue); border-radius:3px 3px 0 0; position:relative; min-height:2px } .hist div span { position:absolute; bottom:-16px; left:0; right:0; text-align:center; font-size:9.5px; color:var(--mut) } .histlbl { display:flex; justify-content:space-between; font-size:11px; color:var(--mut); margin-top:20px }
+:root {
+  color-scheme: dark;
+  --bg:#0d0f1a; --panel:#161929; --panel2:#1d2135; --line:#262b42; --grid:#262b42;
+  --text:#e8eaf2; --mut:#8d92ab;
+  --acc:#f0a04b; --blue:#5b9def; --purple:#6a5ae0; --green:#3ec28f; --red:#e5605a;
+  --shadow:0 1px 2px rgba(0,0,0,.25),0 6px 20px rgba(0,0,0,.28);
+  --shadow-lg:0 12px 40px rgba(0,0,0,.5);
+  --blksh:inset 0 1px 0 rgba(255,255,255,.13),0 10px 22px rgba(0,0,0,.38);
+  --blksh-h:inset 0 1px 0 rgba(255,255,255,.16),0 16px 32px rgba(0,0,0,.5);
+  --rowline:#20243a; --hi:#2a2540;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg:#f2f0ea; --panel:#ffffff; --panel2:#efece4; --line:#e0dbcf; --grid:#e6e1d5;
+  --text:#22242e; --mut:#6d7080;
+  --acc:#d97f1e; --blue:#2f6fc4; --purple:#5a4bd1; --green:#1b9c6b; --red:#cf3d37;
+  --shadow:0 1px 2px rgba(60,50,30,.06),0 6px 18px rgba(60,50,30,.09);
+  --shadow-lg:0 14px 44px rgba(60,50,30,.22);
+  --blksh:inset 0 1px 0 rgba(255,255,255,.2),0 8px 18px rgba(50,40,80,.22);
+  --blksh-h:inset 0 1px 0 rgba(255,255,255,.24),0 14px 28px rgba(50,40,80,.3);
+  --rowline:#ece8de; --hi:#f6ecd9;
+}
+* { box-sizing:border-box }
+html,body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif }
+a { color:var(--blue) } a:hover { text-decoration:none }
+::selection { background:var(--acc); color:#fff }
+.mono, .kv .v, td.amt { font-variant-numeric:tabular-nums; font-feature-settings:"tnum" }
+* { scrollbar-width:thin; scrollbar-color:var(--line) transparent }
+*::-webkit-scrollbar { width:8px; height:8px } *::-webkit-scrollbar-thumb { background:var(--line); border-radius:4px } *::-webkit-scrollbar-track { background:transparent }
+:focus-visible { outline:2px solid var(--acc); outline-offset:2px; border-radius:4px }
+
+.top { display:flex; align-items:center; gap:14px; padding:10px 18px; border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:5 }
+.top .brand { display:flex; align-items:center; gap:10px; font-weight:700; font-size:17.5px; letter-spacing:.2px }
+.top .brand span { color:var(--mut); font-weight:400; font-size:12.5px }
+.top .fill { flex:1 }
+
+.pill { display:inline-flex; align-items:center; gap:7px; padding:5px 12px; border-radius:999px; background:var(--panel2); border:1px solid var(--line); font-size:12.5px; white-space:nowrap; font-variant-numeric:tabular-nums }
+.pill i { width:8px; height:8px; border-radius:50%; background:var(--mut) }
+.pill i.sync { background:var(--acc); box-shadow:0 0 8px var(--acc); animation:tp 1.2s ease-in-out infinite }
+.pill i.ok { background:var(--green); box-shadow:0 0 7px var(--green) }
+.pill i.bad { background:var(--red); box-shadow:0 0 7px var(--red) }
+@keyframes tp { 0%,100% { opacity:1 } 50% { opacity:.3 } }
+
+.search { display:flex; gap:6px }
+.search input { width:360px; max-width:38vw; padding:6px 11px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); font:inherit; font-family:var(--mono); font-size:12.5px; transition:border-color .15s,box-shadow .15s }
+.search input::placeholder { color:var(--mut) }
+.search input:focus { outline:none; border-color:var(--acc); box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 22%,transparent) }
+.search button, .btn { padding:6px 13px; border:1px solid var(--line); border-radius:8px; background:var(--panel2); color:var(--text); font:inherit; cursor:pointer; transition:border-color .15s,background .15s,transform .08s }
+.btn:hover, .search button:hover { border-color:var(--mut) }
+.btn:active, .search button:active { transform:translateY(1px) }
+.iconbtn { display:inline-flex; align-items:center; justify-content:center; padding:6px 9px }
+.iconbtn svg { width:15px; height:15px; display:block }
+:root:not([data-theme="light"]) .i-moon { display:none }
+:root[data-theme="light"] .i-sun { display:none }
+
+main { padding:18px 18px 64px; max-width:1500px; margin:0 auto }
+h2 { font-size:11.5px; text-transform:uppercase; letter-spacing:1px; color:var(--mut); margin:0 0 12px; font-weight:650 }
+
+.blocksrow { display:flex; align-items:stretch; gap:14px; overflow-x:auto; padding:6px 2px 16px }
+.blocks { display:flex; gap:10px } .blocks.proj { flex-direction:row-reverse }
+.divider { width:0; border-left:2px dashed var(--line); position:relative; margin:0 64px 0 8px }
+.divider::after { content:"chain tip"; position:absolute; top:-3px; left:9px; font-size:10.5px; letter-spacing:.4px; color:var(--mut); white-space:nowrap }
+.blk { width:132px; min-width:132px; height:132px; border-radius:10px; padding:10px 11px; display:flex; flex-direction:column; justify-content:space-between; cursor:pointer; position:relative; transition:transform .18s ease,box-shadow .18s ease; box-shadow:var(--blksh) }
+.blk:hover { transform:translateY(-4px); box-shadow:var(--blksh-h) }
+.blk .h { font-weight:700; font-size:13.5px } .blk .r { font-size:12px; opacity:.95 } .blk .s { font-size:11px; opacity:.82 }
+.blk.mined { background:linear-gradient(160deg,#6a5ae0,#4435ad); color:#fff }
+.blk.proj { background:linear-gradient(160deg,var(--c1),var(--c2)); color:#fff }
+.blk.empty { background:var(--panel2); border:1px dashed var(--line); box-shadow:none; color:var(--mut) }
+.blk.sel { outline:2px solid var(--acc); outline-offset:2px }
+
+.grid { display:grid; grid-template-columns:1.1fr 1fr 1.3fr; gap:14px; margin-top:6px }
+@media (max-width:1100px) { .grid { grid-template-columns:1fr 1fr } }
+@media (max-width:760px) { .grid { grid-template-columns:1fr } }
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px; box-shadow:var(--shadow) }
+.kv { display:grid; grid-template-columns:auto 1fr; gap:5px 14px; font-size:13px }
+.kv .l { color:var(--mut) } .kv .v { font-family:var(--mono); text-align:right; font-size:12.5px }
+.mut { color:var(--mut) } .mono { font-family:var(--mono) }
+
+.hist { display:flex; align-items:flex-end; gap:3px; height:90px; margin-top:14px }
+.hist div { flex:1; background:linear-gradient(180deg,var(--blue),color-mix(in srgb,var(--blue) 65%,var(--bg))); border-radius:3px 3px 0 0; position:relative; min-height:2px }
+.hist div:hover { opacity:.8 }
+.hist div span { position:absolute; bottom:-16px; left:0; right:0; text-align:center; font-size:9.5px; color:var(--mut) }
+.histlbl { display:flex; justify-content:space-between; font-size:11px; color:var(--mut); margin-top:20px }
 canvas.g { width:100%; height:160px; display:block; margin-top:6px }
-table { width:100%; border-collapse:collapse; font-size:12.5px } th { text-align:left; color:var(--mut); font-weight:600; padding:6px 8px; border-bottom:1px solid var(--line) } td { padding:6px 8px; border-bottom:1px solid #20243a; white-space:nowrap } td.amt, th.amt { text-align:right; font-family:var(--mono) } tr:hover td { background:var(--panel2) } tr.hi td { background:#2a2540 }
-.detail { margin-top:14px } .refusals { font-family:var(--mono); font-size:11.5px; color:var(--mut); max-height:120px; overflow:auto; margin-top:8px; white-space:pre-wrap }
-.status { position:fixed; left:0; right:0; bottom:0; background:var(--panel); border-top:1px solid var(--line); padding:6px 18px; display:flex; align-items:center; gap:12px; font-size:12.5px; z-index:5 } .status .msg { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis } .pb { width:200px; height:8px; background:var(--bg); border:1px solid var(--line); border-radius:4px; overflow:hidden } .pb i { display:block; height:100%; background:var(--acc); width:0 } .pb[hidden] { display:none }
-dialog { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:10px; padding:0; max-width:560px; width:calc(100% - 40px) } dialog::backdrop { background:rgba(0,0,0,.5) } dialog .t { padding:10px 16px; border-bottom:1px solid var(--line); font-weight:600 } dialog .b { padding:14px 16px; display:grid; gap:10px } dialog .b label { display:grid; gap:4px; font-size:12.5px; color:var(--mut) } dialog .b input[type=text] { padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); font:inherit; font-family:var(--mono); font-size:12px } dialog .row { display:flex; gap:8px; align-items:center; color:var(--text) } dialog .f { padding:10px 16px; border-top:1px solid var(--line); display:flex; justify-content:flex-end; gap:8px } .note { font-size:11.5px; color:var(--mut) }
+
+.tblwrap { max-height:480px; overflow:auto; margin:0 -18px -16px; padding:0 18px 16px; border-radius:0 0 12px 12px }
+table { width:100%; border-collapse:collapse; font-size:12.5px }
+th { text-align:left; color:var(--mut); font-weight:600; font-size:11.5px; letter-spacing:.4px; padding:6px 8px; border-bottom:1px solid var(--line) }
+.tblwrap th { position:sticky; top:0; background:var(--panel); z-index:1 }
+td { padding:6px 8px; border-bottom:1px solid var(--rowline); white-space:nowrap }
+td.amt, th.amt { text-align:right; font-family:var(--mono) }
+tr:hover td { background:var(--panel2) }
+tr.hi td { background:var(--hi) }
+
+.detail { margin-top:14px }
+.refusals { font-family:var(--mono); font-size:11.5px; color:var(--mut); max-height:120px; overflow:auto; margin-top:8px; white-space:pre-wrap }
+
+.status { position:fixed; left:0; right:0; bottom:0; background:var(--panel); border-top:1px solid var(--line); padding:7px 18px; display:flex; align-items:center; gap:12px; font-size:12.5px; z-index:5 }
+.status .msg { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+.pb { width:200px; height:8px; background:var(--bg); border:1px solid var(--line); border-radius:99px; overflow:hidden }
+.pb i { display:block; height:100%; background:linear-gradient(90deg,color-mix(in srgb,var(--acc) 75%,var(--red)),var(--acc)); width:0; transition:width .3s ease }
+.pb[hidden] { display:none }
+
+dialog { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:14px; padding:0; max-width:560px; width:calc(100% - 40px); box-shadow:var(--shadow-lg) }
+dialog::backdrop { background:rgba(8,8,16,.6) }
+dialog .t { padding:12px 18px; border-bottom:1px solid var(--line); font-weight:650 }
+dialog .b { padding:16px 18px; display:grid; gap:12px }
+dialog .b label { display:grid; gap:5px; font-size:12.5px; color:var(--mut) }
+dialog .b input[type=text] { padding:7px 9px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); font:inherit; font-family:var(--mono); font-size:12px; transition:border-color .15s,box-shadow .15s }
+dialog .b input[type=text]:focus { outline:none; border-color:var(--acc); box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 22%,transparent) }
+dialog input[type=checkbox] { accent-color:var(--acc); width:15px; height:15px }
+dialog .row { display:flex; gap:8px; align-items:center; color:var(--text) }
+dialog .f { padding:12px 18px; border-top:1px solid var(--line); display:flex; justify-content:flex-end; gap:8px }
+.note { font-size:11.5px; color:var(--mut); line-height:1.5 }
+
+@media (max-width:760px) {
+  main { padding:12px 12px 60px }
+  .top { flex-wrap:wrap; gap:10px }
+  .search { order:3; width:100% } .search input { max-width:none; flex:1 }
+  .top .brand span { display:none }
+}
+@media (prefers-reduced-motion:reduce) { *,*::before,*::after { animation-duration:.01ms !important; transition-duration:.01ms !important } }
 </style>
 </head>
 <body>
 <div class="top"><div class="brand"><svg width="26" height="26" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#1e2236"/><path d="M6 22c4-10 8-10 10 0s6 10 10 0" fill="none" stroke="#f0a04b" stroke-width="3" stroke-linecap="round"/></svg>Bight <span>txbt4 mempool · BLAKE2b testnet4 · a node in this tab</span></div><div class="fill"></div>
   <span class="pill" id="pill"><i id="pilldot" class="sync"></i><span id="pilltxt">starting</span></span>
-  <form class="search" id="search"><input id="q" placeholder="search a txid" spellcheck="false"><button type="submit">Search</button></form><button class="btn" id="settings" title="Settings">⚙</button></div>
+  <form class="search" id="search"><input id="q" placeholder="search a txid" spellcheck="false"><button type="submit">Search</button></form><button class="btn iconbtn" id="theme" title="Toggle light / dark theme"><svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg><svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></button><button class="btn iconbtn" id="settings" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button></div>
 <main>
   <h2>Blocks · the next ones as this tab would build them, then the last ones it validated</h2>
   <div class="blocksrow"><div class="blocks proj" id="proj"><div class="blk empty"><div class="h">next block</div><div class="s">the mempool is followed once the tab is up to date</div></div></div><div class="divider"></div><div class="blocks" id="mined"></div></div>
@@ -40,7 +147,7 @@ dialog { background:var(--panel); color:var(--text); border:1px solid var(--line
     <div class="panel"><h2>Where it comes from</h2><div class="kv"><span class="l">Relays</span><span class="v" id="s-relays">…</span><span class="l">Heard</span><span class="v" id="s-seen">0</span><span class="l">Accepted</span><span class="v" id="s-acc">0</span><span class="l">Refused</span><span class="v" id="s-ref">0</span><span class="l">Dropped</span><span class="v" id="s-drop">0</span><span class="l">From the mirror on start</span><span class="v" id="s-seed">…</span></div><div class="note" style="margin-top:10px">Kind 23404 events are a node publishing its mempool, one transaction each; kind 23503 events are sends from sidestr wallets. Each is checked here against this tab's own UTXO set before it counts. Refused lately:</div><div class="refusals" id="refusals">none</div></div>
     <div class="panel"><h2>Over time · this session</h2><canvas class="g" id="g"></canvas><div class="note" style="margin-top:4px"><span style="color:var(--blue)">■</span> transactions <span style="color:var(--acc);margin-left:10px">■</span> vB</div></div>
   </div>
-  <div class="panel" style="margin-top:14px"><h2>Transactions in this tab's mempool</h2><table><thead><tr><th>Transaction</th><th>Age</th><th class="amt">vB</th><th class="amt">Fee (sat)</th><th class="amt">sat/vB</th><th>Block</th></tr></thead><tbody id="rows"><tr><td colspan="6" class="mut">nothing yet</td></tr></tbody></table></div>
+  <div class="panel" style="margin-top:14px"><h2>Transactions in this tab's mempool</h2><div class="tblwrap"><table><thead><tr><th>Transaction</th><th>Age</th><th class="amt">vB</th><th class="amt">Fee (sat)</th><th class="amt">sat/vB</th><th>Block</th></tr></thead><tbody id="rows"><tr><td colspan="6" class="mut">nothing yet</td></tr></tbody></table></div></div>
 </main>
 <div class="status"><span class="msg" id="syncmsg">Starting…</span><span id="synceta" class="mut"></span><div class="pb" id="pb" hidden><i id="pbi"></i></div><span class="mut" id="nodeinfo"></span></div>
 <dialog id="dlg"><div class="t">Settings</div><div class="b">
