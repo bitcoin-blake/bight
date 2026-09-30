@@ -3,7 +3,7 @@
 // blocks the tab itself would build from its own mempool, the last blocks it validated, the fee bands, the sources,
 // a graph over the session, and a search. Every transaction shown was validated here; nothing is relayed onward.
 const $ = (id) => document.getElementById(id);
-const NODE = 'https://cdn.jsdelivr.net/gh/bitcoin-blake/blaketestnode@de33b347ccde458f5b82c33b3bab16abd328a7ec';
+const NODE = 'https://cdn.jsdelivr.net/gh/bitcoin-blake/blaketestnode@c6cbed10adac743a9e6721dbf0c193d17ae68731';
 const { createTabNode, mib, n } = await import(`${NODE}/browser/tabnode.js`);
 const LS = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 const q = new URLSearchParams(location.search);
