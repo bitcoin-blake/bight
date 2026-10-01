@@ -228,7 +228,7 @@ const { esc, n, fmtAge, txUrl } = FM;
 $('ver').textContent = VERSION;
 const SNAP_BASE = PARAMS.SNAPSHOT.baseHeight;
 const SNAP_SIZE = FM.fmtGB(PARAMS.SNAPSHOT.bytes);
-// the welcome's figures, from the node this page pins (the page's own text is checked against them in CI)
+// the welcome's figures, from the node this page pins
 $('wl-base').textContent = n(SNAP_BASE);
 $('wl-size').textContent = SNAP_SIZE;
 
