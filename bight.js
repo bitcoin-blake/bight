@@ -5,86 +5,444 @@
 const $ = (id) => document.getElementById(id);
 const NODE = 'https://cdn.jsdelivr.net/gh/bitcoin-blake/blaketestnode@cebed0bb2fcf2157e32e8411a5594fb48d878a81';
 const { createTabNode, mib, n } = await import(`${NODE}/browser/tabnode.js`);
-const LS = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+const LS = {
+  get: (k) => {
+    try {
+      return localStorage.getItem(k);
+    } catch {
+      return null;
+    }
+  },
+  set: (k, v) => {
+    try {
+      localStorage.setItem(k, v);
+    } catch {}
+  },
+};
 const q = new URLSearchParams(location.search);
-const SNAP_URL = q.get('snapshot') ?? LS.get('bight:snapshot') ?? LS.get('reef:snapshot') ?? 'https://melvin.me/public/txbt4/utxo-knots-150307.dat';
+const SNAP_URL =
+  q.get('snapshot') ?? LS.get('bight:snapshot') ?? LS.get('reef:snapshot') ?? 'https://melvin.me/public/txbt4/utxo-knots-150307.dat';
 const BLOCKS_URL = q.get('blocks') ?? LS.get('bight:blocks') ?? LS.get('reef:blocks') ?? 'https://melvin.me/public/txbt4/txbt4-blocks';
-const OPT = (() => { try { return { torrent: false, seed: false, ...JSON.parse(LS.get('bight:options') ?? '{}') }; } catch { return { torrent: false, seed: false }; } })();
-const RELAYS = ['wss://relay.primal.net', 'wss://nostr.oxtr.dev', 'wss://nos.lol', 'wss://relay.damus.io', 'wss://relay.nostr.band', 'wss://nostr.mom'];
+const OPT = (() => {
+  try {
+    return { torrent: false, seed: false, ...JSON.parse(LS.get('bight:options') ?? '{}') };
+  } catch {
+    return { torrent: false, seed: false };
+  }
+})();
+const RELAYS = [
+  'wss://relay.primal.net',
+  'wss://nostr.oxtr.dev',
+  'wss://nos.lol',
+  'wss://relay.damus.io',
+  'wss://relay.nostr.band',
+  'wss://nostr.mom',
+];
 const BLOCK_VB = 200000; // the reduced-data limit on this chain (800,000 weight); the template reply corrects it if the rule is off
 const fmtAge = (s) => (s < 60 ? `${s} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`);
-const fmtTime = (t) => t ? new Date(t * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '…';
+const fmtTime = (t) => (t ? new Date(t * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '…');
 
 const T0 = Math.floor(Date.now() / 1000);
-const tn = createTabNode({ base: NODE, snapshotUrl: SNAP_URL, blocksUrl: BLOCKS_URL, torrent: OPT.torrent, seed: OPT.seed }); const node = tn.node;
+const tn = createTabNode({ base: NODE, snapshotUrl: SNAP_URL, blocksUrl: BLOCKS_URL, torrent: OPT.torrent, seed: OPT.seed });
+const node = tn.node;
 window.bight = { tn, node, OPT };
-const state = { blocks: new Map(), seenTx: new Map(), refusals: [], samples: [], blockVb: BLOCK_VB, template: null, seedCount: null, selected: null, wanted: new Set() };
+const state = {
+  blocks: new Map(),
+  seenTx: new Map(),
+  refusals: [],
+  samples: [],
+  blockVb: BLOCK_VB,
+  template: null,
+  seedCount: null,
+  selected: null,
+  wanted: new Set(),
+};
 
 // ---- status bar and pill
-tn.on('sync', ({ msg, pct, eta }) => { $('syncmsg').textContent = msg; $('synceta').textContent = eta || ''; if (pct == null) $('pb').hidden = true; else { $('pb').hidden = false; $('pbi').style.width = Math.max(0, Math.min(100, pct)).toFixed(1) + '%'; } pill(); });
-function pill() { $('pilldot').className = node.error ? 'bad' : node.synced ? 'ok' : 'sync'; $('pilltxt').textContent = node.error ? 'error' : node.synced ? `up to date · ${n(node.height)}` : node.phase === 'fetch' ? 'fetching the snapshot' : node.phase === 'hash' ? 'checking the snapshot' : node.phase === 'verify' ? 'verifying the snapshot' : node.phase === 'sync' ? `syncing · ${n(node.height ?? 0)}` : 'starting'; $('nodeinfo').textContent = node.st ? `${node.coins ? n(node.coins) + ' coins · ' : ''}${mib(node.recv)} received${node.sent ? ' · ' + mib(node.sent) + ' sent' : ''}` : ''; }
-tn.on('log', ({ text, level }) => { const m = /^mempool: refused ([0-9a-f]+…)(?: from (.*?))?: (.*)$/.exec(text); if (m) { state.refusals.unshift(`${new Date().toLocaleTimeString()} ${m[1]} ${m[3]}${m[2] ? ' (' + m[2] + ')' : ''}`); state.refusals.length = Math.min(state.refusals.length, 30); $('refusals').textContent = state.refusals.join('\n'); }
-  const s = /^mempool: (\d+) of (\d+) from the mirror's file/.exec(text); if (s) { state.seedCount = `${s[1]} of ${s[2]}`; $('s-seed').textContent = state.seedCount; }
-  if (level === 'err') console.warn(text); });
+tn.on('sync', ({ msg, pct, eta }) => {
+  $('syncmsg').textContent = msg;
+  $('synceta').textContent = eta || '';
+  if (pct == null) $('pb').hidden = true;
+  else {
+    $('pb').hidden = false;
+    $('pbi').style.width = Math.max(0, Math.min(100, pct)).toFixed(1) + '%';
+  }
+  pill();
+});
+function pill() {
+  $('pilldot').className = node.error ? 'bad' : node.synced ? 'ok' : 'sync';
+  $('pilltxt').textContent = node.error
+    ? 'error'
+    : node.synced
+      ? `up to date · ${n(node.height)}`
+      : node.phase === 'fetch'
+        ? 'fetching the snapshot'
+        : node.phase === 'hash'
+          ? 'checking the snapshot'
+          : node.phase === 'verify'
+            ? 'verifying the snapshot'
+            : node.phase === 'sync'
+              ? `syncing · ${n(node.height ?? 0)}`
+              : 'starting';
+  $('nodeinfo').textContent = node.st
+    ? `${node.coins ? n(node.coins) + ' coins · ' : ''}${mib(node.recv)} received${node.sent ? ' · ' + mib(node.sent) + ' sent' : ''}`
+    : '';
+}
+tn.on('log', ({ text, level }) => {
+  const m = /^mempool: refused ([0-9a-f]+…)(?: from (.*?))?: (.*)$/.exec(text);
+  if (m) {
+    state.refusals.unshift(`${new Date().toLocaleTimeString()} ${m[1]} ${m[3]}${m[2] ? ' (' + m[2] + ')' : ''}`);
+    state.refusals.length = Math.min(state.refusals.length, 30);
+    $('refusals').textContent = state.refusals.join('\n');
+  }
+  const s = /^mempool: (\d+) of (\d+) from the mirror's file/.exec(text);
+  if (s) {
+    state.seedCount = `${s[1]} of ${s[2]}`;
+    $('s-seed').textContent = state.seedCount;
+  }
+  if (level === 'err') console.warn(text);
+});
 
 // ---- the chain tip and the last blocks: asked from the worker by height, cached
-tn.on('synced', (m) => { if (!node.mempoolOn) { node.mempoolOn = true; tn.followMempool({ relays: RELAYS }); $('s-relays').textContent = `${RELAYS.length} followed`; } document.title = `Bight · txbt4 · ${n(m.height)}`; pill(); wantBlocks(); askTemplate(); });
-function wantBlocks() { if (node.height == null) return; for (let h = node.height; h > node.height - 8 && h > 150307; h--) if (!state.blocks.has(h) && !state.wanted.has(h)) { state.wanted.add(h); tn.post({ type: 'block', height: h, req: 'bight' }); } renderMined(); }
-tn.on('block', (m) => { if (m.req !== 'bight') return; state.wanted.delete(m.height); state.blocks.set(m.height, { height: m.height, hash: m.hash, time: m.header.time, nTx: m.nTx, size: m.size, txids: m.txids, seen: m.txids.filter((t) => state.seenTx.has(t)).length }); if (state.blocks.size > 40) state.blocks.delete(Math.min(...state.blocks.keys())); renderMined(); if (state.selected === m.height) showBlock(m.height); });
+tn.on('synced', (m) => {
+  if (!node.mempoolOn) {
+    node.mempoolOn = true;
+    tn.followMempool({ relays: RELAYS });
+    $('s-relays').textContent = `${RELAYS.length} followed`;
+  }
+  document.title = `Bight · txbt4 · ${n(m.height)}`;
+  pill();
+  wantBlocks();
+  askTemplate();
+});
+function wantBlocks() {
+  if (node.height == null) return;
+  for (let h = node.height; h > node.height - 8 && h > 150307; h--)
+    if (!state.blocks.has(h) && !state.wanted.has(h)) {
+      state.wanted.add(h);
+      tn.post({ type: 'block', height: h, req: 'bight' });
+    }
+  renderMined();
+}
+tn.on('block', (m) => {
+  if (m.req !== 'bight') return;
+  state.wanted.delete(m.height);
+  state.blocks.set(m.height, {
+    height: m.height,
+    hash: m.hash,
+    time: m.header.time,
+    nTx: m.nTx,
+    size: m.size,
+    txids: m.txids,
+    seen: m.txids.filter((t) => state.seenTx.has(t)).length,
+  });
+  if (state.blocks.size > 40) state.blocks.delete(Math.min(...state.blocks.keys()));
+  renderMined();
+  if (state.selected === m.height) showBlock(m.height);
+});
 tn.on('error', () => pill());
 
 // ---- the mempool: the loader keeps node.mempool; the page remembers every txid it accepted (to say later how much of a block it had seen)
-tn.on('mempool', (m) => { for (const t of m.txs) if (!state.seenTx.has(t.txid)) state.seenTx.set(t.txid, { fee: t.fee, vsize: t.vsize, feeRate: t.feeRate, at: t.at }); if (state.seenTx.size > 20000) for (const k of [...state.seenTx.keys()].slice(0, 5000)) state.seenTx.delete(k);
-  renderMempool(); askTemplate(); });
-let tplTimer = null; function askTemplate() { if (!node.synced) return; clearTimeout(tplTimer); tplTimer = setTimeout(() => tn.post({ type: 'template', pay: '6a00' }), 1500); }
-tn.on('template', (m) => { state.template = m; if (m.rdts === false) state.blockVb = 1000000; renderProjected(); $('m-next').textContent = `${n(m.txs)} tx · ${n(m.fees)} sat · ${n(m.weight)} WU`; });
+tn.on('mempool', (m) => {
+  for (const t of m.txs)
+    if (!state.seenTx.has(t.txid)) state.seenTx.set(t.txid, { fee: t.fee, vsize: t.vsize, feeRate: t.feeRate, at: t.at });
+  if (state.seenTx.size > 20000) for (const k of [...state.seenTx.keys()].slice(0, 5000)) state.seenTx.delete(k);
+  renderMempool();
+  askTemplate();
+});
+let tplTimer = null;
+function askTemplate() {
+  if (!node.synced) return;
+  clearTimeout(tplTimer);
+  tplTimer = setTimeout(() => tn.post({ type: 'template', pay: '6a00' }), 1500);
+}
+tn.on('template', (m) => {
+  state.template = m;
+  if (m.rdts === false) state.blockVb = 1000000;
+  renderProjected();
+  $('m-next').textContent = `${n(m.txs)} tx · ${n(m.fees)} sat · ${n(m.weight)} WU`;
+});
 
 // pack the mempool by fee rate into the blocks this tab would build
-function projected() { const mp = node.mempool; if (!mp) return []; const txs = [...mp.txs].sort((a, b) => b.feeRate - a.feeRate); const blocks = []; let cur = null;
-  for (const t of txs) { if (!cur || cur.vsize + t.vsize > state.blockVb) { if (blocks.length >= 8) break; cur = { txs: [], vsize: 0, fees: 0 }; blocks.push(cur); } cur.txs.push(t); cur.vsize += t.vsize; cur.fees += t.fee; }
-  for (const b of blocks) { const r = b.txs.map((t) => t.feeRate); b.min = Math.min(...r); b.max = Math.max(...r); b.med = r[Math.floor(r.length / 2)]; } return blocks; }
-const feeColor = (rate) => { const x = Math.max(0, Math.min(1, Math.log10(Math.max(1, rate)) / 3)); const h = 210 - 180 * x; return [`hsl(${h} 70% 55%)`, `hsl(${h} 70% 38%)`]; };
-function renderProjected() { const blocks = projected(); const el = $('proj'); if (!blocks.length) { el.innerHTML = `<div class="blk empty"><div class="h">next block</div><div class="s">${node.mempool ? 'the mempool is empty' : 'the mempool is followed once the tab is up to date'}</div></div>`; return; }
-  el.innerHTML = blocks.map((b, i) => { const [c1, c2] = feeColor(b.med); return `<div class="blk proj" style="--c1:${c1};--c2:${c2}" data-p="${i}"><div><div class="h">${i === 0 ? 'next block' : `in ~${(i + 1) * 20} min`}</div><div class="r">~${b.med.toFixed(1)} sat/vB</div></div><div><div class="s">${b.min.toFixed(0)} – ${b.max.toFixed(0)} sat/vB</div><div class="s">${n(b.vsize)} vB · ${n(b.txs.length)} tx</div><div class="s">${n(b.fees)} sat fees${i === 0 && state.template ? ' · as built' : ''}</div></div></div>`; }).join('');
-  el.querySelectorAll('.blk').forEach((d) => { d.onclick = () => showProjected(blocks[Number(d.dataset.p)], Number(d.dataset.p)); }); }
-function renderMined() { const hs = [...state.blocks.keys()].sort((a, b) => b - a).slice(0, 8); $('mined').innerHTML = hs.length ? hs.map((h) => { const b = state.blocks.get(h); const fees = b.txids.map((t) => state.seenTx.get(t)).filter(Boolean); const med = fees.length ? fees.map((f) => f.feeRate).sort((x, y) => x - y)[Math.floor(fees.length / 2)] : null; const age = Math.max(0, Math.floor(Date.now() / 1000) - b.time);
-  return `<div class="blk mined${state.selected === h ? ' sel' : ''}" data-h="${h}"><div><div class="h">${n(h)}</div><div class="r">${med != null ? '~' + med.toFixed(1) + ' sat/vB' : ''}</div></div><div><div class="s">${n(b.size)} B · ${n(b.nTx)} tx</div><div class="s">${b.nTx <= 1 ? 'no transactions' : b.time < T0 ? 'before this tab opened' : `${b.seen} of ${b.nTx - 1} seen first`}</div><div class="s">${fmtAge(age)} ago · ${fmtTime(b.time)}</div></div></div>`; }).join('') : `<div class="blk empty"><div class="h">last blocks</div><div class="s">appear once the tab is up to date</div></div>`;
-  $('mined').querySelectorAll('.blk').forEach((d) => { d.onclick = () => showBlock(Number(d.dataset.h)); }); }
-function showBlock(h) { const b = state.blocks.get(h); if (!b) return; state.selected = h; renderMined(); const seen = b.txids.filter((t) => state.seenTx.has(t)); const fees = seen.map((t) => state.seenTx.get(t)); const inMp = b.txids.filter((t) => node.mempool?.txs.some((x) => x.txid === t)).length;
-  $('detail').hidden = false; $('detail').innerHTML = `<h2>Block ${n(h)}</h2><div class="kv"><span class="l">Hash</span><span class="v" style="text-align:left"><a href="https://mempool.guide/testnet4/block/${b.hash}" target="_blank" rel="noopener">${b.hash}</a></span><span class="l">Time</span><span class="v">${new Date(b.time * 1000).toLocaleString()}</span><span class="l">Transactions</span><span class="v">${n(b.nTx)} (${n(b.size)} bytes)</span><span class="l">Seen in this tab's mempool first</span><span class="v">${b.nTx > 1 ? `${seen.length} of ${b.nTx - 1}` : '—'}${inMp ? ` · ${inMp} still listed until the next check` : ''}</span>${fees.length ? `<span class="l">Fees this tab knew</span><span class="v">${n(fees.reduce((a, f) => a + f.fee, 0))} sat over ${fees.length} tx</span>` : ''}<span class="l">Validated by</span><span class="v">this tab</span></div>
-  ${fees.length < b.nTx - 1 ? `<div class="note" style="margin-top:8px">Fees are shown for the transactions this tab had in its mempool before the block; a UTXO node keeps no history for the rest.</div>` : ''}<table style="margin-top:10px"><thead><tr><th>Transaction</th><th class="amt">vB</th><th class="amt">Fee</th><th class="amt">sat/vB</th><th>Seen</th></tr></thead><tbody>${b.txids.map((t, i) => { const f = state.seenTx.get(t); return `<tr><td class="mono" title="${t}"><a href="https://mempool.guide/testnet4/tx/${t}" target="_blank" rel="noopener" style="color:inherit">${t.slice(0, 20)}…</a>${i === 0 ? ' <span class="mut">coinbase</span>' : ''}</td><td class="amt">${f ? n(f.vsize) : '—'}</td><td class="amt">${f ? n(f.fee) : '—'}</td><td class="amt">${f ? f.feeRate.toFixed(1) : '—'}</td><td>${f ? fmtAge(Math.max(0, b.time - f.at)) + ' before the block' : i === 0 ? '' : 'never'}</td></tr>`; }).join('')}</tbody></table><div style="margin-top:8px"><button class="btn" id="dclose">Close</button></div>`; $('dclose').onclick = () => { $('detail').hidden = true; state.selected = null; renderMined(); }; }
-function showProjected(b, i) { state.selected = null; renderMined(); $('detail').hidden = false; $('detail').innerHTML = `<h2>${i === 0 ? 'The next block, as this tab would build it' : `Projected block ${i + 1}`}</h2><div class="kv"><span class="l">Transactions</span><span class="v">${n(b.txs.length)} · ${n(b.vsize)} vB</span><span class="l">Fees</span><span class="v">${n(b.fees)} sat</span><span class="l">Fee rates</span><span class="v">${b.min.toFixed(1)} – ${b.max.toFixed(1)} sat/vB, median ${b.med.toFixed(1)}</span>${i === 0 && state.template ? `<span class="l">The worker's own build</span><span class="v">${n(state.template.txs)} tx · ${n(state.template.fees)} sat · ${n(state.template.weight)} WU at height ${n(state.template.height)}</span>` : ''}</div><div class="note" style="margin-top:8px">Packed by fee rate from this tab's mempool into blocks of ${n(state.blockVb)} vB; the first is also built in full by the node worker (coinbase, witness commitment, header) and every block rule it knows is run on it.</div><table style="margin-top:10px"><thead><tr><th>Transaction</th><th class="amt">vB</th><th class="amt">Fee</th><th class="amt">sat/vB</th></tr></thead><tbody>${b.txs.slice(0, 200).map((t) => `<tr><td class="mono" title="${t.txid}">${t.txid.slice(0, 20)}…</td><td class="amt">${n(t.vsize)}</td><td class="amt">${n(t.fee)}</td><td class="amt">${t.feeRate.toFixed(1)}</td></tr>`).join('')}</tbody></table><div style="margin-top:8px"><button class="btn" id="dclose">Close</button></div>`; $('dclose').onclick = () => { $('detail').hidden = true; }; }
+function projected() {
+  const mp = node.mempool;
+  if (!mp) return [];
+  const txs = [...mp.txs].sort((a, b) => b.feeRate - a.feeRate);
+  const blocks = [];
+  let cur = null;
+  for (const t of txs) {
+    if (!cur || cur.vsize + t.vsize > state.blockVb) {
+      if (blocks.length >= 8) break;
+      cur = { txs: [], vsize: 0, fees: 0 };
+      blocks.push(cur);
+    }
+    cur.txs.push(t);
+    cur.vsize += t.vsize;
+    cur.fees += t.fee;
+  }
+  for (const b of blocks) {
+    const r = b.txs.map((t) => t.feeRate);
+    b.min = Math.min(...r);
+    b.max = Math.max(...r);
+    b.med = r[Math.floor(r.length / 2)];
+  }
+  return blocks;
+}
+const feeColor = (rate) => {
+  const x = Math.max(0, Math.min(1, Math.log10(Math.max(1, rate)) / 3));
+  const h = 210 - 180 * x;
+  return [`hsl(${h} 70% 55%)`, `hsl(${h} 70% 38%)`];
+};
+function renderProjected() {
+  const blocks = projected();
+  const el = $('proj');
+  if (!blocks.length) {
+    el.innerHTML = `<div class="blk empty"><div class="h">next block</div><div class="s">${node.mempool ? 'the mempool is empty' : 'the mempool is followed once the tab is up to date'}</div></div>`;
+    return;
+  }
+  el.innerHTML = blocks
+    .map((b, i) => {
+      const [c1, c2] = feeColor(b.med);
+      return `<div class="blk proj" style="--c1:${c1};--c2:${c2}" data-p="${i}"><div><div class="h">${i === 0 ? 'next block' : `in ~${(i + 1) * 20} min`}</div><div class="r">~${b.med.toFixed(1)} sat/vB</div></div><div><div class="s">${b.min.toFixed(0)} – ${b.max.toFixed(0)} sat/vB</div><div class="s">${n(b.vsize)} vB · ${n(b.txs.length)} tx</div><div class="s">${n(b.fees)} sat fees${i === 0 && state.template ? ' · as built' : ''}</div></div></div>`;
+    })
+    .join('');
+  el.querySelectorAll('.blk').forEach((d) => {
+    d.onclick = () => showProjected(blocks[Number(d.dataset.p)], Number(d.dataset.p));
+  });
+}
+function renderMined() {
+  const hs = [...state.blocks.keys()].sort((a, b) => b - a).slice(0, 8);
+  $('mined').innerHTML = hs.length
+    ? hs
+        .map((h) => {
+          const b = state.blocks.get(h);
+          const fees = b.txids.map((t) => state.seenTx.get(t)).filter(Boolean);
+          const med = fees.length ? fees.map((f) => f.feeRate).sort((x, y) => x - y)[Math.floor(fees.length / 2)] : null;
+          const age = Math.max(0, Math.floor(Date.now() / 1000) - b.time);
+          return `<div class="blk mined${state.selected === h ? ' sel' : ''}" data-h="${h}"><div><div class="h">${n(h)}</div><div class="r">${med != null ? '~' + med.toFixed(1) + ' sat/vB' : ''}</div></div><div><div class="s">${n(b.size)} B · ${n(b.nTx)} tx</div><div class="s">${b.nTx <= 1 ? 'no transactions' : b.time < T0 ? 'before this tab opened' : `${b.seen} of ${b.nTx - 1} seen first`}</div><div class="s">${fmtAge(age)} ago · ${fmtTime(b.time)}</div></div></div>`;
+        })
+        .join('')
+    : `<div class="blk empty"><div class="h">last blocks</div><div class="s">appear once the tab is up to date</div></div>`;
+  $('mined')
+    .querySelectorAll('.blk')
+    .forEach((d) => {
+      d.onclick = () => showBlock(Number(d.dataset.h));
+    });
+}
+function showBlock(h) {
+  const b = state.blocks.get(h);
+  if (!b) return;
+  state.selected = h;
+  renderMined();
+  const seen = b.txids.filter((t) => state.seenTx.has(t));
+  const fees = seen.map((t) => state.seenTx.get(t));
+  const inMp = b.txids.filter((t) => node.mempool?.txs.some((x) => x.txid === t)).length;
+  $('detail').hidden = false;
+  $('detail').innerHTML =
+    `<h2>Block ${n(h)}</h2><div class="kv"><span class="l">Hash</span><span class="v" style="text-align:left"><a href="https://mempool.guide/testnet4/block/${b.hash}" target="_blank" rel="noopener">${b.hash}</a></span><span class="l">Time</span><span class="v">${new Date(b.time * 1000).toLocaleString()}</span><span class="l">Transactions</span><span class="v">${n(b.nTx)} (${n(b.size)} bytes)</span><span class="l">Seen in this tab's mempool first</span><span class="v">${b.nTx > 1 ? `${seen.length} of ${b.nTx - 1}` : '—'}${inMp ? ` · ${inMp} still listed until the next check` : ''}</span>${fees.length ? `<span class="l">Fees this tab knew</span><span class="v">${n(fees.reduce((a, f) => a + f.fee, 0))} sat over ${fees.length} tx</span>` : ''}<span class="l">Validated by</span><span class="v">this tab</span></div>
+  ${fees.length < b.nTx - 1 ? `<div class="note" style="margin-top:8px">Fees are shown for the transactions this tab had in its mempool before the block; a UTXO node keeps no history for the rest.</div>` : ''}<table style="margin-top:10px"><thead><tr><th>Transaction</th><th class="amt">vB</th><th class="amt">Fee</th><th class="amt">sat/vB</th><th>Seen</th></tr></thead><tbody>${b.txids
+    .map((t, i) => {
+      const f = state.seenTx.get(t);
+      return `<tr><td class="mono" title="${t}"><a href="https://mempool.guide/testnet4/tx/${t}" target="_blank" rel="noopener" style="color:inherit">${t.slice(0, 20)}…</a>${i === 0 ? ' <span class="mut">coinbase</span>' : ''}</td><td class="amt">${f ? n(f.vsize) : '—'}</td><td class="amt">${f ? n(f.fee) : '—'}</td><td class="amt">${f ? f.feeRate.toFixed(1) : '—'}</td><td>${f ? fmtAge(Math.max(0, b.time - f.at)) + ' before the block' : i === 0 ? '' : 'never'}</td></tr>`;
+    })
+    .join('')}</tbody></table><div style="margin-top:8px"><button class="btn" id="dclose">Close</button></div>`;
+  $('dclose').onclick = () => {
+    $('detail').hidden = true;
+    state.selected = null;
+    renderMined();
+  };
+}
+function showProjected(b, i) {
+  state.selected = null;
+  renderMined();
+  $('detail').hidden = false;
+  $('detail').innerHTML =
+    `<h2>${i === 0 ? 'The next block, as this tab would build it' : `Projected block ${i + 1}`}</h2><div class="kv"><span class="l">Transactions</span><span class="v">${n(b.txs.length)} · ${n(b.vsize)} vB</span><span class="l">Fees</span><span class="v">${n(b.fees)} sat</span><span class="l">Fee rates</span><span class="v">${b.min.toFixed(1)} – ${b.max.toFixed(1)} sat/vB, median ${b.med.toFixed(1)}</span>${i === 0 && state.template ? `<span class="l">The worker's own build</span><span class="v">${n(state.template.txs)} tx · ${n(state.template.fees)} sat · ${n(state.template.weight)} WU at height ${n(state.template.height)}</span>` : ''}</div><div class="note" style="margin-top:8px">Packed by fee rate from this tab's mempool into blocks of ${n(state.blockVb)} vB; the first is also built in full by the node worker (coinbase, witness commitment, header) and every block rule it knows is run on it.</div><table style="margin-top:10px"><thead><tr><th>Transaction</th><th class="amt">vB</th><th class="amt">Fee</th><th class="amt">sat/vB</th></tr></thead><tbody>${b.txs
+      .slice(0, 200)
+      .map(
+        (t) =>
+          `<tr><td class="mono" title="${t.txid}">${t.txid.slice(0, 20)}…</td><td class="amt">${n(t.vsize)}</td><td class="amt">${n(t.fee)}</td><td class="amt">${t.feeRate.toFixed(1)}</td></tr>`,
+      )
+      .join('')}</tbody></table><div style="margin-top:8px"><button class="btn" id="dclose">Close</button></div>`;
+  $('dclose').onclick = () => {
+    $('detail').hidden = true;
+  };
+}
 
 // ---- the mempool panel, the histogram, the table
 const BANDS = [1, 2, 3, 5, 8, 12, 20, 30, 50, 80, 120, 200, 300, 500, 1000];
-function renderMempool() { const m = node.mempool; if (!m) return; const now = Math.floor(Date.now() / 1000); const rates = m.txs.map((t) => t.feeRate).sort((a, b) => a - b); const med = rates.length ? rates[Math.floor(rates.length / 2)] : null;
-  $('m-count').textContent = n(m.count); $('m-size').textContent = `${n(m.bytes)} vB`; $('m-fees').textContent = `${n(m.fees)} sat`; $('m-med').textContent = med != null ? `${med.toFixed(1)} sat/vB` : '—';
-  $('s-seen').textContent = n(m.stats.seen); $('s-acc').textContent = n(m.stats.accepted); $('s-ref').textContent = n(m.stats.refused); $('s-drop').textContent = n(m.stats.dropped);
-  const counts = BANDS.map(() => 0); for (const t of m.txs) { let i = BANDS.findIndex((b, j) => t.feeRate < (BANDS[j + 1] ?? Infinity)); if (i < 0) i = BANDS.length - 1; counts[i] += t.vsize; } const max = Math.max(1, ...counts);
-  $('hist').innerHTML = BANDS.map((b, i) => `<div style="height:${(counts[i] / max * 100).toFixed(1)}%" title="${b}${BANDS[i + 1] ? '–' + BANDS[i + 1] : '+'} sat/vB: ${n(counts[i])} vB"><span>${i % 2 ? '' : b}</span></div>`).join('');
-  const blocks = projected(); const blockOf = new Map(); blocks.forEach((b, i) => b.txs.forEach((t) => blockOf.set(t.txid, i)));
-  $('rows').innerHTML = m.txs.length ? [...m.txs].sort((a, b) => b.at - a.at).slice(0, 300).map((t) => `<tr data-t="${t.txid}"><td class="mono" title="${t.txid}"><a href="https://mempool.guide/testnet4/tx/${t.txid}" target="_blank" rel="noopener" style="color:inherit">${t.txid.slice(0, 24)}…</a></td><td>${fmtAge(Math.max(0, now - t.at))}</td><td class="amt">${n(t.vsize)}</td><td class="amt">${n(t.fee)}</td><td class="amt">${t.feeRate.toFixed(1)}</td><td>${blockOf.has(t.txid) ? (blockOf.get(t.txid) === 0 ? 'next' : `#${blockOf.get(t.txid) + 1}`) : 'later'}</td></tr>`).join('') : '<tr><td colspan="6" class="mut">empty</td></tr>';
-  renderProjected(); }
-setInterval(() => { if (node.mempool) { renderMempool(); state.samples.push({ t: Date.now(), count: node.mempool.count, vb: node.mempool.bytes }); if (state.samples.length > 1440) state.samples.shift(); drawGraph(); } renderMined(); }, 5000);
-function drawGraph() { const c = $('g'); const W = c.width = c.clientWidth * devicePixelRatio, H = c.height = c.clientHeight * devicePixelRatio; const g = c.getContext('2d'); g.clearRect(0, 0, W, H); const s = state.samples; if (s.length < 2) return; const cs = getComputedStyle(document.documentElement); const cv = (k, d) => cs.getPropertyValue(k).trim() || d; const pad = 6 * devicePixelRatio; const t0 = s[0].t, t1 = s.at(-1).t; const x = (t) => pad + (t - t0) / Math.max(1, t1 - t0) * (W - 2 * pad);
-  const line = (key, color) => { const max = Math.max(1, ...s.map((p) => p[key])); g.beginPath(); s.forEach((p, i) => { const X = x(p.t), Y = H - pad - p[key] / max * (H - 2 * pad); i ? g.lineTo(X, Y) : g.moveTo(X, Y); }); g.strokeStyle = color; g.lineWidth = 1.5 * devicePixelRatio; g.stroke(); };
-  g.strokeStyle = cv('--grid', '#2a2f47'); g.lineWidth = devicePixelRatio; for (let i = 1; i < 4; i++) { g.beginPath(); g.moveTo(pad, H * i / 4); g.lineTo(W - pad, H * i / 4); g.stroke(); }
-  line('vb', cv('--acc', '#f0a04b')); line('count', cv('--blue', '#4a90e2')); }
+function renderMempool() {
+  const m = node.mempool;
+  if (!m) return;
+  const now = Math.floor(Date.now() / 1000);
+  const rates = m.txs.map((t) => t.feeRate).sort((a, b) => a - b);
+  const med = rates.length ? rates[Math.floor(rates.length / 2)] : null;
+  $('m-count').textContent = n(m.count);
+  $('m-size').textContent = `${n(m.bytes)} vB`;
+  $('m-fees').textContent = `${n(m.fees)} sat`;
+  $('m-med').textContent = med != null ? `${med.toFixed(1)} sat/vB` : '—';
+  $('s-seen').textContent = n(m.stats.seen);
+  $('s-acc').textContent = n(m.stats.accepted);
+  $('s-ref').textContent = n(m.stats.refused);
+  $('s-drop').textContent = n(m.stats.dropped);
+  const counts = BANDS.map(() => 0);
+  for (const t of m.txs) {
+    let i = BANDS.findIndex((b, j) => t.feeRate < (BANDS[j + 1] ?? Infinity));
+    if (i < 0) i = BANDS.length - 1;
+    counts[i] += t.vsize;
+  }
+  const max = Math.max(1, ...counts);
+  $('hist').innerHTML = BANDS.map(
+    (b, i) =>
+      `<div style="height:${((counts[i] / max) * 100).toFixed(1)}%" title="${b}${BANDS[i + 1] ? '–' + BANDS[i + 1] : '+'} sat/vB: ${n(counts[i])} vB"><span>${i % 2 ? '' : b}</span></div>`,
+  ).join('');
+  const blocks = projected();
+  const blockOf = new Map();
+  blocks.forEach((b, i) => b.txs.forEach((t) => blockOf.set(t.txid, i)));
+  $('rows').innerHTML = m.txs.length
+    ? [...m.txs]
+        .sort((a, b) => b.at - a.at)
+        .slice(0, 300)
+        .map(
+          (t) =>
+            `<tr data-t="${t.txid}"><td class="mono" title="${t.txid}"><a href="https://mempool.guide/testnet4/tx/${t.txid}" target="_blank" rel="noopener" style="color:inherit">${t.txid.slice(0, 24)}…</a></td><td>${fmtAge(Math.max(0, now - t.at))}</td><td class="amt">${n(t.vsize)}</td><td class="amt">${n(t.fee)}</td><td class="amt">${t.feeRate.toFixed(1)}</td><td>${blockOf.has(t.txid) ? (blockOf.get(t.txid) === 0 ? 'next' : `#${blockOf.get(t.txid) + 1}`) : 'later'}</td></tr>`,
+        )
+        .join('')
+    : '<tr><td colspan="6" class="mut">empty</td></tr>';
+  renderProjected();
+}
+setInterval(() => {
+  if (node.mempool) {
+    renderMempool();
+    state.samples.push({ t: Date.now(), count: node.mempool.count, vb: node.mempool.bytes });
+    if (state.samples.length > 1440) state.samples.shift();
+    drawGraph();
+  }
+  renderMined();
+}, 5000);
+function drawGraph() {
+  const c = $('g');
+  const W = (c.width = c.clientWidth * devicePixelRatio),
+    H = (c.height = c.clientHeight * devicePixelRatio);
+  const g = c.getContext('2d');
+  g.clearRect(0, 0, W, H);
+  const s = state.samples;
+  if (s.length < 2) return;
+  const cs = getComputedStyle(document.documentElement);
+  const cv = (k, d) => cs.getPropertyValue(k).trim() || d;
+  const pad = 6 * devicePixelRatio;
+  const t0 = s[0].t,
+    t1 = s.at(-1).t;
+  const x = (t) => pad + ((t - t0) / Math.max(1, t1 - t0)) * (W - 2 * pad);
+  const line = (key, color) => {
+    const max = Math.max(1, ...s.map((p) => p[key]));
+    g.beginPath();
+    s.forEach((p, i) => {
+      const X = x(p.t),
+        Y = H - pad - (p[key] / max) * (H - 2 * pad);
+      i ? g.lineTo(X, Y) : g.moveTo(X, Y);
+    });
+    g.strokeStyle = color;
+    g.lineWidth = 1.5 * devicePixelRatio;
+    g.stroke();
+  };
+  g.strokeStyle = cv('--grid', '#2a2f47');
+  g.lineWidth = devicePixelRatio;
+  for (let i = 1; i < 4; i++) {
+    g.beginPath();
+    g.moveTo(pad, (H * i) / 4);
+    g.lineTo(W - pad, (H * i) / 4);
+    g.stroke();
+  }
+  line('vb', cv('--acc', '#f0a04b'));
+  line('count', cv('--blue', '#4a90e2'));
+}
 
 // ---- search: the mempool first, then the blocks this tab has looked at
-$('search').onsubmit = (e) => { e.preventDefault(); const t = $('q').value.trim().toLowerCase(); if (!/^[0-9a-f]{64}$/.test(t)) { $('detail').hidden = false; $('detail').innerHTML = `<h2>Search</h2><div class="mut">a txid is 64 hex characters</div>`; return; }
-  const mp = node.mempool?.txs.find((x) => x.txid === t); document.querySelectorAll('#rows tr').forEach((r) => r.classList.toggle('hi', r.dataset.t === t));
-  if (mp) { $('detail').hidden = false; $('detail').innerHTML = `<h2>In this tab's mempool</h2><div class="kv"><span class="l">Transaction</span><span class="v" style="text-align:left"><a href="https://mempool.guide/testnet4/tx/${t}" target="_blank" rel="noopener">${t}</a></span><span class="l">Size</span><span class="v">${n(mp.vsize)} vB</span><span class="l">Fee</span><span class="v">${n(mp.fee)} sat · ${mp.feeRate.toFixed(1)} sat/vB</span><span class="l">Heard</span><span class="v">${new Date(mp.at * 1000).toLocaleTimeString()}</span><span class="l">Inputs</span><span class="v" style="text-align:left">${mp.inputs.map((k) => k.slice(0, 16) + '…:' + k.split(':')[1]).join(', ')}</span><span class="l">Outputs</span><span class="v" style="text-align:left">${mp.outputs.map((o) => `${n(o.value)} sat → ${o.scriptPubKey.slice(0, 20)}…`).join('<br>')}</span></div>`; return; }
-  for (const b of state.blocks.values()) if (b.txids.includes(t)) { showBlock(b.height); return; }
-  const seen = state.seenTx.get(t); $('detail').hidden = false; $('detail').innerHTML = `<h2>Not found</h2><div class="mut">${seen ? `this tab had it in its mempool at ${new Date(seen.at * 1000).toLocaleTimeString()} (${n(seen.vsize)} vB, ${seen.feeRate.toFixed(1)} sat/vB); it has since been confirmed or dropped` : 'not in this tab\'s mempool, and not in the last blocks it looked at; a tab keeps no history beyond that'}</div>`; };
+$('search').onsubmit = (e) => {
+  e.preventDefault();
+  const t = $('q').value.trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(t)) {
+    $('detail').hidden = false;
+    $('detail').innerHTML = `<h2>Search</h2><div class="mut">a txid is 64 hex characters</div>`;
+    return;
+  }
+  const mp = node.mempool?.txs.find((x) => x.txid === t);
+  document.querySelectorAll('#rows tr').forEach((r) => r.classList.toggle('hi', r.dataset.t === t));
+  if (mp) {
+    $('detail').hidden = false;
+    $('detail').innerHTML =
+      `<h2>In this tab's mempool</h2><div class="kv"><span class="l">Transaction</span><span class="v" style="text-align:left"><a href="https://mempool.guide/testnet4/tx/${t}" target="_blank" rel="noopener">${t}</a></span><span class="l">Size</span><span class="v">${n(mp.vsize)} vB</span><span class="l">Fee</span><span class="v">${n(mp.fee)} sat · ${mp.feeRate.toFixed(1)} sat/vB</span><span class="l">Heard</span><span class="v">${new Date(mp.at * 1000).toLocaleTimeString()}</span><span class="l">Inputs</span><span class="v" style="text-align:left">${mp.inputs.map((k) => k.slice(0, 16) + '…:' + k.split(':')[1]).join(', ')}</span><span class="l">Outputs</span><span class="v" style="text-align:left">${mp.outputs.map((o) => `${n(o.value)} sat → ${o.scriptPubKey.slice(0, 20)}…`).join('<br>')}</span></div>`;
+    return;
+  }
+  for (const b of state.blocks.values())
+    if (b.txids.includes(t)) {
+      showBlock(b.height);
+      return;
+    }
+  const seen = state.seenTx.get(t);
+  $('detail').hidden = false;
+  $('detail').innerHTML =
+    `<h2>Not found</h2><div class="mut">${seen ? `this tab had it in its mempool at ${new Date(seen.at * 1000).toLocaleTimeString()} (${n(seen.vsize)} vB, ${seen.feeRate.toFixed(1)} sat/vB); it has since been confirmed or dropped` : "not in this tab's mempool, and not in the last blocks it looked at; a tab keeps no history beyond that"}</div>`;
+};
 
 // ---- theme
-$('theme').onclick = () => { const el = document.documentElement; el.dataset.theme = el.dataset.theme === 'light' ? 'dark' : 'light'; LS.set('bight:theme', el.dataset.theme); drawGraph(); };
+$('theme').onclick = () => {
+  const el = document.documentElement;
+  el.dataset.theme = el.dataset.theme === 'light' ? 'dark' : 'light';
+  LS.set('bight:theme', el.dataset.theme);
+  drawGraph();
+};
 
 // ---- settings
-$('settings').onclick = () => { $('o-snapshot').value = SNAP_URL; $('o-blocks').value = BLOCKS_URL; $('o-torrent').checked = !!OPT.torrent; $('o-seed').checked = !!OPT.seed; $('o-wipenote').textContent = ''; delete $('o-wipe').dataset.armed; $('dlg').showModal(); };
+$('settings').onclick = () => {
+  $('o-snapshot').value = SNAP_URL;
+  $('o-blocks').value = BLOCKS_URL;
+  $('o-torrent').checked = !!OPT.torrent;
+  $('o-seed').checked = !!OPT.seed;
+  $('o-wipenote').textContent = '';
+  delete $('o-wipe').dataset.armed;
+  $('dlg').showModal();
+};
 $('o-cancel').onclick = () => $('dlg').close();
-$('o-wipe').onclick = () => { if ($('o-wipe').dataset.armed) { $('o-wipenote').textContent = 'wiping…'; delete $('o-wipe').dataset.armed; Promise.resolve(tn.wipe()).then(() => { $('o-wipenote').textContent = 'wiped; the next visit fetches the snapshot again'; }, (e) => { $('o-wipenote').textContent = 'not wiped: ' + (e?.message || e); }); } else { $('o-wipe').dataset.armed = '1'; $('o-wipenote').textContent = 'press again to remove it (Reef in this browser loses it too)'; } };
-$('o-ok').onclick = () => { OPT.torrent = $('o-torrent').checked; OPT.seed = $('o-seed').checked; LS.set('bight:options', JSON.stringify(OPT)); tn.setTorrent(OPT.torrent); tn.setSeed(OPT.seed); const s = $('o-snapshot').value.trim(), b = $('o-blocks').value.trim(); const reload = (s && s !== SNAP_URL) || (b && b !== BLOCKS_URL); if (s) LS.set('bight:snapshot', s); if (b) LS.set('bight:blocks', b); $('dlg').close(); if (reload) location.search = ''; };
+$('o-wipe').onclick = () => {
+  if ($('o-wipe').dataset.armed) {
+    $('o-wipenote').textContent = 'wiping…';
+    delete $('o-wipe').dataset.armed;
+    Promise.resolve(tn.wipe()).then(
+      () => {
+        $('o-wipenote').textContent = 'wiped; the next visit fetches the snapshot again';
+      },
+      (e) => {
+        $('o-wipenote').textContent = 'not wiped: ' + (e?.message || e);
+      },
+    );
+  } else {
+    $('o-wipe').dataset.armed = '1';
+    $('o-wipenote').textContent = 'press again to remove it (Reef in this browser loses it too)';
+  }
+};
+$('o-ok').onclick = () => {
+  OPT.torrent = $('o-torrent').checked;
+  OPT.seed = $('o-seed').checked;
+  LS.set('bight:options', JSON.stringify(OPT));
+  tn.setTorrent(OPT.torrent);
+  tn.setSeed(OPT.seed);
+  const s = $('o-snapshot').value.trim(),
+    b = $('o-blocks').value.trim();
+  const reload = (s && s !== SNAP_URL) || (b && b !== BLOCKS_URL);
+  if (s) LS.set('bight:snapshot', s);
+  if (b) LS.set('bight:blocks', b);
+  $('dlg').close();
+  if (reload) location.search = '';
+};
 
-try { if (await tn.start() === false) $('syncmsg').textContent = 'idle: the node runs in another tab of this browser (Reef, Bight, Winch or Hitch); close that tab and reload here'; } catch (e) { $('syncmsg').textContent = 'Error: could not start the node: ' + e.message; node.error = e.message; pill(); }
+try {
+  if ((await tn.start()) === false)
+    $('syncmsg').textContent =
+      'idle: the node runs in another tab of this browser (Reef, Bight, Winch or Hitch); close that tab and reload here';
+} catch (e) {
+  $('syncmsg').textContent = 'Error: could not start the node: ' + e.message;
+  node.error = e.message;
+  pill();
+}
