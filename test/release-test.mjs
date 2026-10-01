@@ -196,12 +196,14 @@ t(
   /header: block\.header/.test(blockPost) && /time: m\.header\?\.time/.test(blockOfSrc),
 );
 // a request the node cannot answer ("Block not found") is an error that echoes its req, and the loader keeps such an
-// answer out of node.error: the page matches it to its own search by req
+// answer out of node.error (unless it is a fault in the node's files, which is the node's state): the page matches it to its own search by req
 t(
   'a request the node cannot answer is an error that echoes the request’s req; the loader does not take it as the node’s state',
-  /post\(\{ type: 'error', text: err\.message[^\n]*\.\.\.\(m\.req != null \? \{ req: m\.req \} : \{\}\)/.test(worker) &&
+  /post\(\{ type: 'error', (?:name: err\?\.name \?\? null, )?text: err\.message[^\n]*\.\.\.\(m\.req != null \? \{ req: m\.req \} : \{\}\)/.test(
+    worker,
+  ) &&
     /throw new Error\('Block not found'\)/.test(worker) &&
-    /m\.type === 'error'\) \{ const lookup = node\.synced && \(m\.req != null/.test(tabnode) &&
+    /m\.type === 'error'\) \{ const lookup = node\.synced && (?:!storageFault\(m\) && )?\(m\.req != null/.test(tabnode) &&
     /if \(!lookup\) \{ node\.error = m\.text;/.test(tabnode),
 );
 // a wipe that leaves no node running: the loader says so the way the page reads it (phase 'error', a fatal error message,
