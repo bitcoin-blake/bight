@@ -35,6 +35,22 @@ jobs:
           base="${{ github.event.before }}"
           if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then base=$(git rev-parse HEAD~1 2>/dev/null || true); fi
           [ -z "$base" ] || node tools/version-up.mjs "$base"
+      - name: before deploying, the other apps on main pin this node, or one that reads the same storage layout
+        # the four apps share this origin's node files: a node that writes another layout than the others read would make
+        # them refuse the files (or need a wipe), so that is an error; another pin with the same layout is a warning
+        run: |
+          mine=$(grep -o 'blaketestnode@[0-9a-f]\{40\}' bight.js | head -1 | cut -d@ -f2)
+          layout() { curl -fsSL "https://raw.githubusercontent.com/bitcoin-blake/blaketestnode/$1/browser/worker.js" | grep -o '^const LAYOUT = [0-9]*' | grep -o '[0-9]*$'; }
+          want=$(layout "$mine")
+          [ -n "$want" ] || { echo "::error::no LAYOUT in the node at $mine"; exit 1; }
+          for app in reef winch hitch; do
+            p=$(curl -fsSL "https://raw.githubusercontent.com/bitcoin-blake/$app/main/$app.js" | grep -o 'blaketestnode@[0-9a-f]\{40\}' | sort -u | cut -d@ -f2)
+            [ "$(echo "$p" | grep -c .)" = 1 ] || { echo "::error::$app on main pins more or fewer than one node version"; exit 1; }
+            [ "$p" = "$mine" ] && { echo "$app: $p (the same)"; continue; }
+            l=$(layout "$p")
+            if [ "$l" != "$want" ]; then echo "::error::$app pins $p (layout $l), this page $mine (layout $want): the shared files would be refused"; exit 1; fi
+            echo "::warning::$app pins $p, this page $mine: the same layout ($l), but bump them together"
+          done
       - name: the site to deploy, and every file it refers to is in it
         run: |
           node tools/site.mjs _site
@@ -72,7 +88,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: the four published apps pin the same node (after this deploy is served)
+      - name: the four published apps pin the same node (polled until this deploy is served)
         run: |
           want=$(node -pe 'require("./version.json").version')
           for i in $(seq 1 30); do

@@ -47,6 +47,13 @@ async function profile(seed = {}, { config = null, version = null } = {}) {
       return route.fulfill({ status: 200, contentType: 'text/javascript', body: execSync(`git -C ${BTN} show ${m[1]}:${m[2]}`) });
     if (version && u.startsWith(ORIGIN + '/version.json'))
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ version }) });
+    // a page on another site that frames Bight
+    if (u === 'http://127.0.0.1:8798/xframe')
+      return route.fulfill({
+        status: 200,
+        contentType: 'text/html',
+        body: `<!doctype html><iframe src="${ORIGIN}/index.html" width="900" height="700"></iframe>`,
+      });
     if (u === ORIGIN + '/frame')
       return route.fulfill({
         status: 200,
@@ -111,6 +118,11 @@ const mp = (txs, o = {}) => ({
   ...o,
 });
 const emit = (page, type, m) => page.evaluate(([type, m]) => window.__fake.emit(type, m), [type, m]);
+// the req the page sent with its latest request for a height (it carries the page's generation)
+const reqFor = (page, height) =>
+  page.evaluate((h) => window.__fake.posts.filter((m) => m.type === 'block' && m.height === h).at(-1)?.req ?? null, height);
+// a block reply for a height, with the req the page asked it with
+const reply = async (page, b) => emit(page, 'block', { ...b, req: await reqFor(page, b.height) });
 const text = (page, sel) => page.textContent(sel).catch(() => '');
 
 // 1: a first visit asks before the 830 MB download, before it looks at the lock; Start starts the node with the defaults
@@ -187,7 +199,7 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
     'up to date: the mempool is followed once, and the last eight blocks are asked for, each once',
     (await a.evaluate(() => window.__fake.follows.length)) === 1 &&
       ((hs) => new Set(hs).size === hs.length && Array.from({ length: 8 }, (_, i) => 152094 + i).every((h) => hs.includes(h)))(
-        posts.filter((m) => m.type === 'block' && m.req === 'bight').map((m) => m.height),
+        posts.filter((m) => m.type === 'block' && /^bight:\d+$/.test(m.req)).map((m) => m.height),
       ),
     JSON.stringify(posts.filter((m) => m.type === 'block').map((m) => m.height)),
   );
@@ -224,10 +236,18 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
     'one built on another parent at the same height is stale, not "built"',
     /building on the new tip/.test(await text(a, '#m-next')) && !/✓ built/.test(await text(a, '#proj')),
   );
+  await emit(a, 'template', { ...tpl, checks: { ok: true, failed: [] }, mempool: { count: 4 } });
+  await until(a, () => /earlier mempool/.test(document.getElementById('m-next').textContent));
+  t(
+    'one built from an earlier mempool than the page shows: said, and no "✓ built"',
+    /^built on an earlier mempool \(4 tx then\)/.test(await text(a, '#m-next')) &&
+      !/✓ built/.test(await text(a, '#proj')) &&
+      /built on an earlier mempool/.test(await text(a, '#proj')),
+    await text(a, '#m-next'),
+  );
   await emit(a, 'template', { ...tpl, checks: { ok: true, failed: [] } });
   // a block found after the mempool was followed, and after the block before it: one of the seen transactions
   const block = (hash, txid) => ({
-    req: 'bight',
     height: 152101,
     hash,
     previousblockhash: 'dd'.repeat(32),
@@ -236,7 +256,7 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
     header: { time: Math.floor(Date.now() / 1000) },
     txids: ['00'.repeat(32), txid],
   });
-  await emit(a, 'block', block('ee'.repeat(32), id('c', 1)));
+  await reply(a, block('ee'.repeat(32), id('c', 1)));
   await until(a, () => !!document.querySelector('#mined [data-k=h152101]'));
   t('a mined block says how much of it was seen first', /1 of 1 seen first/.test(await text(a, '#mined')), await text(a, '#mined'));
   t(
@@ -288,21 +308,48 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
       (await a.getAttribute('#mined [data-k=h152101]', 'aria-expanded')) === 'true' &&
       /Block 152,101/.test(await text(a, '#detail')),
   );
+  t(
+    'Close sits in the detail’s header, beside its title',
+    await a.evaluate(() => !!document.querySelector('#detail .dhead #dtitle + #dclose')),
+  );
   await a.click('#dclose');
   t(
     'Close hides the detail and gives the focus back to the tile',
     (await a.evaluate(() => document.getElementById('detail').hidden && document.activeElement?.dataset.k === 'h152101')) &&
       (await a.getAttribute('#mined [data-k=h152101]', 'aria-expanded')) === 'false',
   );
+  // Escape closes it too, and gives the focus back the same way
+  await a.keyboard.press('Enter');
+  await until(a, () => document.activeElement?.id === 'detail');
+  await a.keyboard.press('Escape');
+  t(
+    'Escape closes the detail and gives the focus back to the tile',
+    await until(a, () => document.getElementById('detail').hidden && document.activeElement?.dataset.k === 'h152101'),
+  );
+  // a projected tile says when it is the one open
+  await a.click('#proj [data-k=p0]');
+  t(
+    'a projected block open: its tile is expanded and selected',
+    (await until(a, () => document.querySelector('#proj [data-k=p0]')?.getAttribute('aria-expanded') === 'true')) &&
+      (await a.$eval('#proj [data-k=p0]', (e) => e.classList.contains('sel'))),
+  );
+  await a.click('#dclose');
   // a reorganisation: the tip replaced by another block at the same height
+  const oldReq = await reqFor(a, 152101);
   await emit(a, 'synced', { height: 152101, hash: 'ff'.repeat(32), applied: 1 });
   await until(a, () => !/1 of 1 seen first/.test(document.getElementById('mined').textContent));
   t(
-    'a block replaced by a reorganisation is dropped and asked for again',
+    'a block replaced by a reorganisation is dropped and asked for again, under a new generation',
     !/1 of 1 seen first/.test(await text(a, '#mined')) &&
-      (await a.evaluate(() => window.__fake.posts.filter((m) => m.type === 'block' && m.height === 152101).length)) >= 2,
+      (await a.evaluate(() => window.__fake.posts.filter((m) => m.type === 'block' && m.height === 152101).length)) >= 2 &&
+      (await reqFor(a, 152101)) !== oldReq,
   );
-  await emit(a, 'block', block('ff'.repeat(32), id('c', 2)));
+  // a late answer to the request from before the reorganisation: ignored
+  await emit(a, 'block', { ...block('ee'.repeat(32), id('c', 1)), req: oldReq });
+  await a.waitForTimeout(150);
+  t('a late reply asked on the replaced branch is ignored', !(await a.$('#mined [data-k=h152101]')));
+  await reply(a, block('ff'.repeat(32), id('c', 2)));
+  t('…and the reply under the new generation is kept', await until(a, () => !!document.querySelector('#mined [data-k=h152101]')));
   // a mempool whose last transactions the node did not send whole: found by a prefix, asked of the node
   const big = [...Array.from({ length: 1000 }, (_, i) => mtx('d', i, 2 + (i % 50))), mtx('e', 5, 1)];
   await emit(a, 'mempool', mp(big));
@@ -352,11 +399,45 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
     'a txid in a block this tab holds: "Found in block 152,101"',
     await until(a, () => /Found in block 152,101/.test(document.getElementById('detail').textContent)),
   );
-  await a.fill('#q', '152101');
+  await a.fill('#q', '152,101');
   await a.press('#q', 'Enter');
   t(
-    'a height this tab holds opens that block',
+    'a height this tab holds opens that block (written with a comma)',
     await until(a, () => /^Block 152,101/.test(document.getElementById('dtitle')?.textContent ?? '')),
+  );
+  // a height between the snapshot and the tip that the tab does not hold: asked of the node, and shown
+  await a.fill('#q', '151000');
+  await a.press('#q', 'Enter');
+  const askedOld = await until(a, () =>
+    window.__fake.posts.some((m) => m.type === 'block' && m.height === 151000 && /^bight:s\d+$/.test(m.req)),
+  );
+  await reply(a, {
+    height: 151000,
+    hash: '5a'.repeat(32),
+    previousblockhash: '5b'.repeat(32),
+    size: 300,
+    nTx: 1,
+    header: { time: 1 },
+    txids: ['00'.repeat(32)],
+  });
+  t(
+    'an older height is asked of the node and opened when it answers, kept apart from the tiles',
+    askedOld &&
+      (await until(a, () => /^Block 151,000/.test(document.getElementById('dtitle')?.textContent ?? ''))) &&
+      !(await a.$('#mined [data-k=h151000]')),
+  );
+  await a.fill('#q', '150000');
+  await a.press('#q', 'Enter');
+  t(
+    'a height before the snapshot is said to be before it, and nothing is asked',
+    (await until(a, () => /before the snapshot at 150,307/.test(document.getElementById('detail').textContent))) &&
+      !(await a.evaluate(() => window.__fake.posts.some((m) => m.type === 'block' && m.height === 150000))),
+  );
+  await a.fill('#q', '999999');
+  await a.press('#q', 'Enter');
+  t(
+    'a height above the tip is said to be above it',
+    await until(a, () => /above this tab's tip/.test(document.getElementById('detail').textContent)),
   );
   await a.fill('#q', '9'.repeat(64));
   await a.press('#q', 'Enter');
@@ -370,12 +451,16 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
     await text(a, '#detail'),
   );
   // a row opens the in-page detail; the external link is separate and labelled
-  await a.click(`#rows button[data-open="${id('d', 9)}"]`);
+  await a.focus(`#rows button[data-open="${id('d', 9)}"]`);
+  await a.keyboard.press('Enter');
   t(
-    'a row’s txid opens the detail in the page; the ↗ beside it names the other site',
+    'a row’s txid opens the detail in the page, with where it would go; the ↗ beside it names the other site',
     (await until(a, (x) => document.getElementById('detail').textContent.includes(x), id('d', 9))) &&
+      /Projected/.test(await text(a, '#detail')) &&
       /mempool\.guide/.test(await a.getAttribute(`#rows tr[data-t="${id('d', 9)}"] a.ext`, 'aria-label')),
   );
+  await a.click('#dclose');
+  t('Close gives the focus back to the row that opened it', await until(a, (x) => document.activeElement?.dataset.open === x, id('d', 9)));
   // the feed's heartbeat
   await emit(a, 'mempool', mp(big, { feedFileAt: Date.now() - 11 * 60e3 }));
   t(
@@ -431,17 +516,12 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
     'the first press arms it and says what it removes',
     /press again/.test(await text(a, '#o-wipenote')) && (await a.evaluate(() => window.__fake.wipes)) === 0,
   );
-  await a.click('#o-wipe');
-  await until(a, () => !!document.querySelector('#banners [data-b=wiped]'));
-  const before = await a.evaluate(() => window.__fake.posts.length);
-  await emit(a, 'synced', { height: 152102, hash: 'aa'.repeat(32), applied: 1 });
-  await a.waitForTimeout(100);
+  await p.reloaded(a, () => a.click('#o-wipe'));
   t(
-    'the second wipes: the answer to the download is forgotten, the pill says so, and the node is asked nothing more',
-    (await a.evaluate(() => window.__fake.wipes)) === 1 &&
-      (await a.evaluate(() => !localStorage.getItem('reef:started') && !localStorage.getItem('bight:started'))) &&
-      /wiped/.test(await text(a, '#pilltxt')) &&
-      (await a.evaluate(() => window.__fake.posts.length)) === before,
+    'the second wipes, and the page reloads (the node’s worker and timers end with it); the answer to the download is forgotten, so it asks again',
+    (await a.evaluate(() => !localStorage.getItem('reef:started') && !localStorage.getItem('bight:started'))) &&
+      (await until(a, () => !!document.querySelector('#welcome[open]'))) &&
+      (await a.evaluate(() => window.__fake.starts)) === 0,
   );
   t('no page errors', !p.errors.length, p.errors.join(' | '));
   await p.ctx.close();
@@ -504,6 +584,7 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
   t('Settings shows the stored source, not the link’s', (await a.inputValue('#o-blocks')) === DEFAULT_BLOCKS);
   await a.click('#o-torrent');
   await a.click('#o-ok');
+  await a.waitForTimeout(100);
   t(
     'pressing OK for another setting does not store the link’s source',
     (await a.evaluate(() => localStorage.getItem('bight:blocks'))) === null,
@@ -517,6 +598,19 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
     JSON.stringify(await a.evaluate(() => [window.__fake.opts.blocksUrl, location.search])),
   );
   t('…and stores nothing', (await a.evaluate(() => localStorage.getItem('bight:blocks'))) === null);
+  await a.click('#settings');
+  t(
+    'after the yes, Settings still shows the stored source, not the one this visit uses',
+    (await a.inputValue('#o-blocks')) === DEFAULT_BLOCKS,
+  );
+  await a.click('#o-ok');
+  await a.waitForTimeout(100);
+  t(
+    '…and OK with nothing changed stores nothing and keeps the visit’s source',
+    (await a.evaluate(() => localStorage.getItem('bight:blocks'))) === null &&
+      (await a.evaluate(() => window.__fake.opts.blocksUrl)) === PROPOSED &&
+      !(await a.evaluate(() => document.getElementById('dlg').open)),
+  );
   await p.reloaded(a, () => a.click('#banners [data-b=custom-src] button'));
   t(
     '"Back to the default" drops it: the default source, no notice, no query',
@@ -543,8 +637,8 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
   t('Reset fills the defaults', (await a.inputValue('#o-blocks')) === DEFAULT_BLOCKS);
   await p.reloaded(a, () => a.click('#o-ok'));
   t(
-    'OK stores the default for Bight over Reef’s (Reef’s own setting untouched), and the node uses it',
-    (await a.evaluate(() => localStorage.getItem('bight:blocks'))) === DEFAULT_BLOCKS &&
+    'OK stores "default" for Bight over Reef’s (Reef’s own setting untouched), and the node uses the default',
+    (await a.evaluate(() => localStorage.getItem('bight:blocks'))) === 'default' &&
       (await a.evaluate(() => localStorage.getItem('reef:blocks'))) === REEF &&
       (await a.evaluate(() => window.__fake.opts.blocksUrl)) === DEFAULT_BLOCKS &&
       !(await a.$('#banners [data-b=custom-src]')),
@@ -554,9 +648,133 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
   await a.click('#o-ok');
   t(
     'an address that is not https:// is refused in words, and nothing is stored',
-    /https:\/\//.test(await text(a, '#o-err')) && (await a.evaluate(() => localStorage.getItem('bight:blocks'))) === DEFAULT_BLOCKS,
+    /https:\/\//.test(await text(a, '#o-err')) && (await a.evaluate(() => localStorage.getItem('bight:blocks'))) === 'default',
   );
   t('no page errors in Settings', !p.errors.length, p.errors.join(' | '));
+  await p.ctx.close();
+}
+// 8: the real order, on a controlled clock: the first sync (a catch-up of many blocks), the mempool followed, then blocks one
+// at a time; a catch-up of several after a gap; a gap in listening (the timer late, as after sleep)
+{
+  const p = await profile({ 'reef:started': '1' });
+  const a = await p.open();
+  await until(a, () => window.__fake.starts === 1);
+  const T0 = Date.UTC(2026, 9, 1, 12);
+  const at = (ms) => a.clock.setFixedTime(T0 + ms);
+  const X = mtx('7', 1, 5);
+  const blk = (h, txids) => ({
+    height: h,
+    hash: h.toString(16).padStart(64, '0'),
+    previousblockhash: (h - 1).toString(16).padStart(64, '0'),
+    size: 400,
+    nTx: txids.length + 1,
+    header: { time: Math.floor(T0 / 1000) - 3600 },
+    txids: ['00'.repeat(32), ...txids],
+  });
+  await at(0);
+  await emit(a, 'synced', { height: 152099, hash: (152099).toString(16).padStart(64, '0'), applied: 1792 });
+  await at(1000);
+  await emit(a, 'mempool', mp([X]));
+  await at(2000);
+  await emit(a, 'synced', { height: 152100, hash: (152100).toString(16).padStart(64, '0'), applied: 1 });
+  await at(3000);
+  await emit(a, 'synced', { height: 152101, hash: (152101).toString(16).padStart(64, '0'), applied: 1 });
+  await until(a, () => window.__fake.posts.filter((m) => m.type === 'block' && m.height === 152101).length > 0);
+  for (const h of [152099, 152100]) await reply(a, blk(h, []));
+  await reply(a, blk(152101, [X.txid]));
+  await until(a, () => !!document.querySelector('#mined [data-k=h152101]'));
+  await at(13000);
+  await emit(a, 'mempool', mp([X]));
+  await until(a, () => /10 s ago/.test(document.querySelector('#mined [data-k=h152101]')?.textContent ?? ''));
+  t(
+    'a block that arrived on its own after the listening began, after one that did too: counted',
+    /1 of 1 seen first/.test(await text(a, '#mined [data-k=h152101]')),
+    await text(a, '#mined [data-k=h152101]'),
+  );
+  t(
+    'its age is from when it reached this tab (10 s), not its header (an hour)',
+    /10 s ago/.test(await text(a, '#mined [data-k=h152101]')),
+    await text(a, '#mined [data-k=h152101]'),
+  );
+  t(
+    'the block from the first sync is aged by its header, and says so',
+    /header 1\.0 h ago/.test(await text(a, '#mined [data-k=h152099]')),
+    await text(a, '#mined [data-k=h152099]'),
+  );
+  // a catch-up of two after a gap: neither counted, though the transaction was heard
+  await at(20000);
+  await emit(a, 'synced', { height: 152103, hash: (152103).toString(16).padStart(64, '0'), applied: 2 });
+  await until(a, () => window.__fake.posts.some((m) => m.type === 'block' && m.height === 152103));
+  await reply(a, blk(152102, []));
+  await reply(a, blk(152103, [X.txid]));
+  t(
+    'blocks that came in one catch-up are not counted ("not listening then")',
+    (await until(a, () => /not listening then/.test(document.querySelector('#mined [data-k=h152103]')?.textContent ?? ''))) &&
+      !/seen first/.test(await text(a, '#mined [data-k=h152103]')),
+    await text(a, '#mined [data-k=h152103]'),
+  );
+  // the timer comes back a minute late (asleep): the next block's predecessor arrived before the gap, so it is not counted
+  await at(25000);
+  await emit(a, 'synced', { height: 152104, hash: (152104).toString(16).padStart(64, '0'), applied: 1 });
+  await at(100000);
+  await a.waitForTimeout(5500); // one tick of the page's 5 s timer sees the clock jump
+  await at(101000);
+  await emit(a, 'synced', { height: 152105, hash: (152105).toString(16).padStart(64, '0'), applied: 1 });
+  await at(102000);
+  await emit(a, 'synced', { height: 152106, hash: (152106).toString(16).padStart(64, '0'), applied: 1 });
+  await until(a, () => window.__fake.posts.some((m) => m.type === 'block' && m.height === 152106));
+  for (const h of [152104, 152105, 152106]) await reply(a, blk(h, [X.txid]));
+  await until(a, () => !!document.querySelector('#mined [data-k=h152106]'));
+  t(
+    'after a gap in listening, the first block whose predecessor came before it is not counted; the next one is',
+    /not listening then/.test(await text(a, '#mined [data-k=h152105]')) && /seen first/.test(await text(a, '#mined [data-k=h152106]')),
+    (await text(a, '#mined [data-k=h152105]')) + ' | ' + (await text(a, '#mined [data-k=h152106]')),
+  );
+  t('no page errors on the controlled clock', !p.errors.length, p.errors.join(' | '));
+  await p.ctx.close();
+}
+// 9: "Not now", then a change of mind from the notice
+{
+  const p = await profile();
+  const a = await p.open();
+  await until(a, () => !!document.querySelector('#welcome[open]'));
+  await a.click('#wl-later');
+  t(
+    '"Not now" starts nothing and leaves a notice to start later',
+    (await until(a, () => !!document.querySelector('#banners [data-b=welcome] button'))) &&
+      (await a.evaluate(() => window.__fake.starts)) === 0 &&
+      !(await a.evaluate(() => localStorage.getItem('reef:started'))),
+  );
+  await a.click('#banners [data-b=welcome] button');
+  await until(a, () => !!document.querySelector('#welcome[open]'));
+  await a.click('#wl-start');
+  t(
+    'a change of mind: Start from the notice starts the node and remembers the answer; the notice goes',
+    (await until(a, () => window.__fake.starts === 1)) &&
+      !!(await a.evaluate(() => localStorage.getItem('reef:started'))) &&
+      !(await a.$('#banners [data-b=welcome]')),
+  );
+  t('no page errors on a change of mind', !p.errors.length, p.errors.join(' | '));
+  await p.ctx.close();
+}
+// 10: framed by a page on another site: no download, no lock override, no source chosen there; it says to open Bight in its tab
+{
+  const p = await profile({}, { config: { lockError: 'refused' } });
+  const page = await p.ctx.newPage();
+  page.on('pageerror', (e) => p.errors.push(e.message));
+  await page.goto('http://127.0.0.1:8798/xframe');
+  const f = page.frames().find((x) => x !== page.mainFrame());
+  await f.waitForFunction(() => window.__fake && !!document.querySelector('#welcome[open]'), null, { timeout: 30000 });
+  t('framed by another site, Start becomes "Open Bight in its own tab"', /own tab/.test(await f.textContent('#wl-start')));
+  const popup = page.waitForEvent('popup', { timeout: 5000 }).catch(() => null);
+  await f.click('#wl-start');
+  const opened = await popup;
+  t(
+    '…which opens it in a tab and starts nothing here',
+    !!opened && (await f.evaluate(() => window.__fake.starts)) === 0 && !(await f.evaluate(() => localStorage.getItem('reef:started'))),
+  );
+  await opened?.close();
+  t('no page errors in a frame on another site', !p.errors.length, p.errors.join(' | '));
   await p.ctx.close();
 }
 await browser.close();

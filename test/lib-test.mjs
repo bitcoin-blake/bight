@@ -137,26 +137,45 @@ t('the hue runs from blue at 1 to orange at 1000', F.feeHue(1) === 210 && F.feeH
   SE.rememberSeen(seen, [tx('a', 10, 1), tx('b', 10, 1)]);
   SE.rememberSeen(seen, [tx('a', 10, 1, { at: 9999, fee: 77 })]);
   t('what was seen first is kept, not overwritten by a later copy', seen.get(id('a')).at === 1000);
-  const block = { txids: [id('c'), id('a'), id('z')], nTx: 3, arrivedAt: 2000 };
+  const block = { txids: [id('c'), id('a'), id('z')], nTx: 3 };
+  const alone = (at) => ({ at, alone: true });
   t(
     'a block whose whole interval the tab listened for says how much of it was seen first (the coinbase never)',
-    SE.blockSeen(block, seen, { followedAt: 1500, prevArrivedAt: 1600 }).words === '1 of 2 seen first',
+    SE.blockSeen(block, seen, { followedAt: 1500, arrival: alone(2000), prevArrival: alone(1600) }).words === '1 of 2 seen first',
   );
   t(
     'a block whose previous block came before the tab listened is not counted: "not listening then"',
-    SE.blockSeen(block, seen, { followedAt: 1500, prevArrivedAt: 1400 }).words === 'not listening then' &&
-      SE.blockSeen(block, seen, { followedAt: 1500, prevArrivedAt: null }).counted === false &&
-      SE.blockSeen({ ...block, arrivedAt: 1000 }, seen, { followedAt: 1500, prevArrivedAt: 1600 }).counted === false &&
-      SE.blockSeen(block, seen, { followedAt: null, prevArrivedAt: 1600 }).counted === false,
+    SE.blockSeen(block, seen, { followedAt: 1500, arrival: alone(2000), prevArrival: alone(1400) }).words === 'not listening then' &&
+      SE.blockSeen(block, seen, { followedAt: 1500, arrival: alone(2000), prevArrival: null }).counted === false &&
+      SE.blockSeen(block, seen, { followedAt: 1500, arrival: alone(1000), prevArrival: alone(1600) }).counted === false &&
+      SE.blockSeen(block, seen, { followedAt: null, arrival: alone(2000), prevArrival: alone(1600) }).counted === false,
+  );
+  t(
+    'arriving at the same millisecond the listening began is not after it (strictly after, both blocks)',
+    SE.blockSeen(block, seen, { followedAt: 1500, arrival: alone(1500), prevArrival: alone(1400) }).counted === false &&
+      SE.blockSeen(block, seen, { followedAt: 1500, arrival: alone(2000), prevArrival: alone(1500) }).counted === false &&
+      SE.blockSeen(block, seen, { followedAt: 1500, arrival: alone(2000), prevArrival: alone(1501) }).counted === true,
+  );
+  t(
+    'a block that came with others in one catch-up (after sleep, a gap) is not counted, though it arrived after listening began',
+    SE.blockSeen(block, seen, { followedAt: 1500, arrival: { at: 2000, alone: false }, prevArrival: alone(1600) }).counted === false,
   );
   t(
     'a block with only its coinbase has no transactions',
-    SE.blockSeen({ txids: [id('c')], nTx: 1, arrivedAt: 2000 }, seen, { followedAt: 1 }).words === 'no transactions',
+    SE.blockSeen({ txids: [id('c')], nTx: 1 }, seen, { followedAt: 1 }).words === 'no transactions',
   );
-  const fees = SE.blockSeen({ txids: [id('c'), id('a'), id('b')], nTx: 9, arrivedAt: 2000 }, seen, { followedAt: 1, prevArrivedAt: 2 });
+  t(
+    'the coinbase is never counted as seen, even if its txid was',
+    SE.blockSeen({ txids: [id('a'), id('z')], nTx: 2 }, seen, { followedAt: 1, arrival: alone(5), prevArrival: alone(3) }).seen === 0,
+  );
+  const fees = SE.blockSeen({ txids: [id('c'), id('a'), id('b')], nTx: 9 }, seen, {
+    followedAt: 1,
+    arrival: alone(5),
+    prevArrival: alone(2),
+  });
   t(
     'the fees known add up, and the transaction count is the block’s, not the list’s',
-    fees.knownFees === 20 && fees.knownCount === 2 && fees.others === 8,
+    fees.knownFees === 20 && fees.knownCount === 2 && fees.others === 8 && fees.counted,
   );
   const many = new Map();
   SE.rememberSeen(
@@ -236,7 +255,34 @@ t('the hue runs from blue at 1 to orange at 1000', F.feeHue(1) === 210 && F.feeH
     { W: 100, H: 50 },
   );
   t('an empty mempool all along: the true top is 0, drawn on the floor', flat.top === 0 && flat.scale === 1 && flat.runs[0][0][1] === 50);
-  t('one sample draws nothing', SR.polyline([{ t: 0, count: 3 }], 'count', { W: 1, H: 1 }).runs.length === 0);
+  const one = SR.polyline([{ t: 0, count: 3 }], 'count', { W: 10, H: 10 });
+  t(
+    'one sample is one point (drawn as a dot), in the middle',
+    one.runs.length === 1 && one.runs[0].length === 1 && one.runs[0][0][0] === 5,
+  );
+  t('no samples, nothing', SR.polyline([], 'count', { W: 1, H: 1 }).runs.length === 0);
+  const lone = SR.polyline(
+    [
+      { t: 0, count: 1 },
+      { t: 30000, count: 2 },
+      { t: 60000, count: 3 },
+      { t: 65000, count: 3 },
+    ],
+    'count',
+    { W: 100, H: 10, gapMs: 20000 },
+  );
+  t('a sample with gaps on both sides is a run of its own', lone.runs.map((r) => r.length).join() === '1,1,2');
+  t(
+    'a gap is more than gapMs, not equal to it',
+    SR.polyline(
+      [
+        { t: 0, count: 1 },
+        { t: 20000, count: 1 },
+      ],
+      'count',
+      { W: 1, H: 1, gapMs: 20000 },
+    ).runs.length === 1,
+  );
   t(
     'the span is said in minutes, then hours',
     SR.spanWords([{ t: 0 }, { t: 30 * 60000 }]) === 'the last 30 minutes' &&
@@ -459,9 +505,24 @@ t(
       JSON.stringify([{ key: 'bight:blocks', del: true }]),
   );
   t(
-    '…but stores the default when Reef stored another (or Reef’s would come back)',
+    '…but stores "default" when Reef stored another (or Reef’s would come back)',
     JSON.stringify(SET.sourceWrites({ fields: defaults, reef: { blocks: 'https://r/b' }, defaults })) ===
-      JSON.stringify([{ key: 'bight:blocks', set: SO.DEFAULT_BLOCKS }]),
+      JSON.stringify([{ key: 'bight:blocks', set: 'default' }]),
+  );
+  t(
+    'a stored "default" is the default: nothing to write for the default, an address written over it',
+    SET.sourceWrites({ fields: defaults, bight: { blocks: 'default' }, reef: { blocks: 'https://r/b' }, defaults }).length === 0 &&
+      SET.sourceWrites({ fields: { ...defaults, blocks: 'https://x/b' }, bight: { blocks: 'default' }, defaults })[0].set === 'https://x/b',
+  );
+  t(
+    'Reef storing the default itself needs no "default" from Bight',
+    JSON.stringify(
+      SET.sourceWrites({ fields: defaults, bight: { blocks: 'https://x/b' }, reef: { blocks: SO.DEFAULT_BLOCKS }, defaults }),
+    ) === JSON.stringify([{ key: 'bight:blocks', del: true }]),
+  );
+  t(
+    'a field is trimmed before it is compared',
+    SET.sourceWrites({ fields: { ...defaults, blocks: ' ' + SO.DEFAULT_BLOCKS + ' ' }, defaults }).length === 0,
   );
   t(
     'an empty field means the default',
@@ -511,11 +572,49 @@ t(
   );
   t('at most eight', CH.wantHeights({ height: 200, blocks: new Map(), wanted: new Map(), now: 0, floor: 0 }).length === 8);
   t('no height, nothing asked', CH.wantHeights({ height: null, blocks: new Map(), wanted: new Map(), now: 0, floor: 0 }).length === 0);
-  const arr = new Map([[100, 5]]);
+  const arr = new Map([
+    [99, { at: 5, alone: true }],
+    [100, { at: 5, alone: true }],
+  ]);
   CH.markArrived(arr, { height: 102, applied: 3 }, 9);
   t(
-    'every height a sync applied reached the tab then; an earlier arrival is kept',
-    arr.get(100) === 5 && arr.get(101) === 9 && arr.get(102) === 9,
+    'every height a sync applied reached the tab then, replacing what was there (a reorganisation); none of a catch-up is alone',
+    arr.get(99).at === 5 &&
+      arr.get(100).at === 9 &&
+      arr.get(101).at === 9 &&
+      arr.get(102).at === 9 &&
+      !arr.get(102).alone &&
+      !arr.get(100).alone,
+  );
+  CH.markArrived(arr, { height: 103, applied: 1 }, 12);
+  t('a pass that applied one block: that block arrived alone', arr.get(103).alone && arr.get(103).at === 12);
+  CH.markArrived(arr, { height: 103, applied: 0 }, 20);
+  CH.markArrived(arr, { height: 104, applied: 0 }, 21);
+  t(
+    'a pass that applied nothing keeps the tip’s arrival, and marks a tip that had none (not alone)',
+    arr.get(103).at === 12 && arr.get(104).at === 21 && !arr.get(104).alone,
+  );
+  CH.markArrived(arr, { height: 101, applied: 0 }, 30);
+  t('a rollback forgets the arrivals above the new tip', !arr.has(102) && !arr.has(104) && arr.get(101).at === 9);
+  t(
+    'requests carry their generation; a search is told apart; anything else is not the page’s',
+    CH.parseReq(CH.reqOf(3)).gen === 3 &&
+      !CH.parseReq(CH.reqOf(3)).search &&
+      CH.parseReq(CH.reqOf(4, true)).search &&
+      CH.parseReq(CH.reqOf(4, true)).gen === 4 &&
+      CH.parseReq('bight') === null &&
+      CH.parseReq('reef:1') === null &&
+      CH.parseReq(null) === null,
+  );
+  const b6 = new Map([
+    [10, mk(10, 'a10', 'a9')],
+    [11, mk(11, 'a11', 'a10')],
+    [12, mk(12, 'a12', 'a11')],
+  ]);
+  const d6 = CH.onSynced(b6, { height: 12, hash: 'b12', applied: 2 });
+  t(
+    'a pass that applied two blocks drops exactly those two heights, and says which',
+    b6.has(10) && !b6.has(11) && !b6.has(12) && d6.sort().join() === '11,12',
   );
 }
 // ---- the throttle
@@ -606,7 +705,7 @@ t(
   t('a long block detail is capped, with how many more', (big.match(/<tr data-t/g) ?? []).length === 200 && /and 100 more/.test(big));
   t(
     'not found says where it looked',
-    /blocks 5–6 \(the last 2 this tab holds\)/.test(
+    /blocks 5–6 \(the last 2 blocks this tab holds\)/.test(
       V.notFoundWords({ where: 'none', searched: { from: 5, to: 6, count: 2 } }, { count: 9 }),
     ) && /type more/.test(V.notFoundWords({ where: 'many', count: 2 })),
   );
@@ -623,6 +722,303 @@ t(
         outputs: [{ value: 1, scriptPubKey: '<y>' }],
       }),
     ),
+  );
+}
+// ---- round 3: the node's real words, the build judged against this mempool, search, status, sources, words, markup
+{
+  // the refusal line with every source the node passes (lib/mempool.mjs subscribeMempool, the worker's seed), and none
+  const line = (from) => `mempool: refused abababababab…${from ? ' from ' + from : ''}: input 0: script failed`;
+  const shapes = ['1a2b3c4d… via relay.damus.io', 'the mirror', 'wss://relay.x', ''];
+  t(
+    'a refusal is read from every source the node names, with spaces in it; the reason whole',
+    shapes.every((f) => {
+      const r = NT.parseRefusal(line(f));
+      return r && r.txid === 'abababababab' && r.from === (f || null) && r.reason === 'input 0: script failed';
+    }),
+    JSON.stringify(shapes.map((f) => NT.parseRefusal(line(f)))),
+  );
+  const m = { height: 101, prevHash: id('p'), txs: 2, fees: 1600, weight: 1601, checks: { ok: true, failed: [] }, mempool: { count: 2 } };
+  const blk = P.packBlocks([tx('a', 100, 10), tx('b', 300, 2)])[0];
+  t('the build’s vB rounds up (1,601 weight is 401 vB)', NT.templateWords(m, 100, id('p')).vb === 401);
+  t(
+    'a build of this mempool, with the page’s figures: built',
+    NT.templateWords(m, 100, id('p'), { count: 2, block: blk }).ok &&
+      /^✓ built: 2 tx · 1,600 sat/.test(NT.templateWords(m, 100, id('p'), { count: 2, block: blk }).text),
+  );
+  const early = NT.templateWords(m, 100, id('p'), { count: 3, block: blk });
+  t(
+    'a build that saw another count than the page shows: "built on an earlier mempool", never "✓ built"',
+    !early.ok && early.earlier && /^built on an earlier mempool \(2 tx then\)/.test(early.text) && !/✓/.test(early.text),
+  );
+  const diff = NT.templateWords({ ...m, fees: 1500 }, 100, id('p'), { count: 2, block: blk });
+  t('the same count but other figures: the node’s build differs, not built', !diff.ok && diff.differs && /differs/.test(diff.text));
+  t(
+    'an empty mempool: built only if the node’s build is empty too',
+    NT.templateWords({ ...m, txs: 0, fees: 0, mempool: { count: 0 } }, 100, null, { count: 0, block: null }).ok &&
+      !NT.templateWords({ ...m, mempool: { count: 0 } }, 100, null, { count: 0, block: null }).ok,
+  );
+  t(
+    'a build with no checks at all is not a pass, and says it was not checked',
+    !NT.templateWords({ ...m, checks: undefined }, 100).ok &&
+      NT.templateWords({ ...m, checks: undefined }, 100).text === "the worker's build was not checked",
+  );
+  t(
+    'a template that does not say its mempool count is judged by its figures alone',
+    NT.templateWords({ ...m, mempool: null }, 100, null, { count: 5, block: blk }).ok,
+  );
+}
+{
+  t(
+    'heights as people write them: commas, spaces, underscores; not more than nine digits',
+    SC.parseQuery('152,103').height === 152103 &&
+      SC.parseQuery('152 103').height === 152103 &&
+      SC.parseQuery('152_103').height === 152103 &&
+      SC.parseQuery('1234567890').height === undefined &&
+      !!SC.parseQuery(',152').error,
+  );
+  t('a prefix needs 8 characters: 7 is not one', !!SC.parseQuery('abcdef1').error && SC.parseQuery('abcdef12').prefix === 'abcdef12');
+  const blocks = [
+    { height: 5, hash: 'beef' + id('h').slice(4), txids: [id('c'), id('b')] },
+    { height: 6, hash: id('i'), txids: [id('d')] },
+  ];
+  t(
+    'the start of a block hash finds that block; a start that a txid and a hash share asks for more',
+    SC.locate({ prefix: blocks[0].hash.slice(0, 10) }, { blocks }).height === 5 &&
+      SC.locate({ prefix: 'iiiiiiii' }, { list: [tx('i', 1, 1)], blocks }).where === 'many',
+  );
+  t('a prefix matches the start only, not the middle', SC.locate({ prefix: blocks[0].hash.slice(2, 12) }, { blocks }).where === 'none');
+  t('the coinbase of a block held can be searched', SC.locate({ id: id('c') }, { blocks }).height === 5);
+  t(
+    'a height not held says which, and whether the node can be asked',
+    SC.locate({ height: 7 }, { blocks }).height === 7 &&
+      SC.heightRange(150307, { floor: 150307, tip: 152000 }) === 'below' &&
+      SC.heightRange(150308, { floor: 150307, tip: 152000 }) === 'ask' &&
+      SC.heightRange(152000, { floor: 150307, tip: 152000 }) === 'ask' &&
+      SC.heightRange(152001, { floor: 150307, tip: 152000 }) === 'above' &&
+      SC.heightRange(5, { floor: 0, tip: null }) === 'unknown',
+  );
+  t(
+    'out of range in words: before the snapshot, above the tip',
+    /at or before the snapshot at 150,307/.test(V.notFoundWords({ where: 'none', height: 100 }, { range: 'below', floor: 150307 })) &&
+      /above this tab's tip \(152,000\)/.test(V.notFoundWords({ where: 'none', height: 152001 }, { range: 'above', tip: 152000 })),
+  );
+}
+{
+  const NOW = 1_800_000_000_000;
+  const base = {
+    synced: true,
+    height: 100,
+    time: NOW / 1000 - 60,
+    lastSync: NOW - 5000,
+    nostr: { height: 101, agree: 3, diverged: false },
+  };
+  t(
+    'one or two behind the signed tip is said so, amber, never "signed"',
+    ST.pillState(base, { now: NOW }).text === 'up to date · 100 · 1 behind the signed tip' &&
+      ST.pillState(base, { now: NOW }).level === 'warn' &&
+      /2 blocks behind/.test(ST.chainState({ ...base, nostr: { ...base.nostr, height: 102 } }, { now: NOW }).text) &&
+      /1 block behind/.test(ST.chainState(base, { now: NOW }).text),
+  );
+  t(
+    'the heartbeat by when the page saw it: fresh though the node’s figure is old; old though the node’s figure is new',
+    !ST.feedState({ following: true, feedFileAt: NOW - 60 * 60e3 }, { now: NOW, seenAt: NOW - 60e3 }) &&
+      !!ST.feedState({ following: true, feedFileAt: NOW }, { now: NOW, seenAt: NOW - 11 * 60e3 }),
+  );
+  t(
+    'no heartbeat at all: said after five minutes of following, not before',
+    !!ST.feedState({ following: true }, { now: NOW, followedAt: NOW - 5 * 60e3 - 1 }) &&
+      !ST.feedState({ following: true }, { now: NOW, followedAt: NOW - 5 * 60e3 }) &&
+      !ST.feedState({ following: true }, { now: NOW }),
+  );
+  t(
+    'the heartbeat at exactly ten minutes is still fresh',
+    !ST.feedState({ following: true }, { now: NOW, seenAt: NOW - 10 * 60e3 }) &&
+      !!ST.feedState({ following: true }, { now: NOW, seenAt: NOW - 10 * 60e3 - 1 }),
+  );
+  t('a node flagged busy (no phase) is idle', ST.pillState({ busy: true }).level === 'idle');
+  t(
+    'a retry at exactly now is not waiting; 1.2 s is "2 s"',
+    ST.pillState({ phase: 'sync', retryAt: NOW }, { now: NOW }).text === 'syncing · 0' &&
+      ST.pillState({ phase: 'sync', retryAt: NOW + 1200 }, { now: NOW }).text === 'retrying in 2 s',
+  );
+  t(
+    'a source silent exactly three minutes is not yet silent',
+    ST.chainState({ ...base, nostr: null, lastSync: NOW - 180e3 }, { now: NOW }).level === 'none',
+  );
+  t(
+    'the browser’s own names for a held file and a full disk are worded',
+    ST.plainError('NoModificationAllowedError: x').startsWith('Another tab') &&
+      ST.plainError('InvalidStateError').startsWith('Another tab') &&
+      ST.plainError('could not create access handle').startsWith('Another tab') &&
+      /1.1 GB/.test(ST.plainError('not enough space')) &&
+      /1.1 GB/.test(ST.plainError('quota reached')),
+  );
+}
+{
+  const PARAMS = { SNAPSHOT: { file: 'utxo-knots-160000.dat' } };
+  const D = SO.defaultsFor(PARAMS);
+  t(
+    'the default snapshot is the pinned node’s file on the mirror; without one, the built-in',
+    D.snapshot === SO.MIRROR + 'utxo-knots-160000.dat' && SO.defaultsFor(null).snapshot === SO.DEFAULT_SNAP,
+  );
+  const get = (s) => (k) => s[k] ?? null;
+  t(
+    'a stored "default" is the default of the day, and stops Reef’s source coming back',
+    SO.resolveSources({ get: get({ 'bight:snapshot': 'default', 'reef:snapshot': 'https://r/s' }), defaults: D }).use.snapshot ===
+      D.snapshot && SO.resolveSources({ get: get({ 'reef:snapshot': 'https://r/s' }), defaults: D }).use.snapshot === 'https://r/s',
+  );
+  t(
+    'Bight’s source before Reef’s, for the snapshot as for the blocks',
+    SO.resolveSources({ get: get({ 'bight:snapshot': 'https://b/s', 'reef:snapshot': 'https://r/s' }) }).use.snapshot === 'https://b/s',
+  );
+  t(
+    'a link proposing what is already used proposes nothing; an acceptance of another value accepts nothing',
+    !('blocks' in SO.resolveSources({ query: new URLSearchParams('blocks=' + SO.DEFAULT_BLOCKS) }).proposed) &&
+      SO.resolveSources({ query: new URLSearchParams('blocks=https://e/x'), accepted: () => 'https://e/y' }).use.blocks ===
+        SO.DEFAULT_BLOCKS &&
+      SO.resolveSources({ query: new URLSearchParams('snapshot=https://e/x'), accepted: () => 'https://e/y' }).use.snapshot ===
+        SO.DEFAULT_SNAP,
+  );
+  t('what is not an address is shown as it is', SO.hostOf('not a url') === 'not a url');
+  t('a stored value is an address, "default", or nothing', SO.storedValue('default') === 'default' && SO.storedValue('x') === null);
+}
+{
+  t(
+    'counts with their nouns, and small sizes not shown as nothing',
+    FM.pl(1, 'block') === '1 block' &&
+      FM.pl(2, 'block') === '2 blocks' &&
+      FM.pl(1000, 'transaction') === '1,000 transactions' &&
+      FM.pl(0, 'gap') === '0 gaps' &&
+      FM.fmtMiB(1000) === '< 0.1 MiB' &&
+      FM.fmtMiB(0) === '0.0 MiB' &&
+      FM.fmtMiB(2 * 1048576) === '2.0 MiB',
+  );
+  const list = Array.from({ length: 10 }, (_, i) => tx('r' + i, 50000, 10 - i));
+  const blocks = P.packBlocks(list, { maxBlocks: 2 });
+  const r = P.remainder(list, blocks);
+  t(
+    'what the projected blocks leave: its transactions, vB and about how many blocks',
+    r.count === 4 && r.vb === 200000 && r.blocks === 2 && P.remainder(list, P.packBlocks(list)).count === 0,
+    JSON.stringify(r),
+  );
+  t('a transaction of 0 vB has rate 0, not a division by zero', P.mempoolList({ all: [[id('z'), 0, 5, 1, 0]] })[0].feeRate === 0);
+  t('a transaction of 0 vB does not count toward the median by size', P.weightedMedian([tx('a', 0, 99), tx('b', 10, 1)]) === 1);
+  t('the highest rate of a block is its highest, wherever it sits', P.rateStats([tx('a', 1, 2), tx('b', 1, 9), tx('c', 1, 5)]).max === 9);
+  const seen = new Map();
+  SE.rememberSeen(seen, [tx('f', 300, 2)]);
+  t('fees known add fees, not sizes', SE.blockSeen({ txids: [id('c'), id('f')], nTx: 2 }, seen, {}).knownFees === 600);
+  const cap = [];
+  SR.pushSample(cap, { t: 0 }, 2);
+  SR.pushSample(cap, { t: 1 }, 2);
+  cap.push({ t: 2 }, { t: 3 });
+  SR.pushSample(cap, { t: 4 }, 2);
+  t('a sample over a cap that was passed trims back to the cap', cap.length === 2 && cap[0].t === 3);
+  t(
+    'the span is in minutes up to 89, then hours',
+    SR.spanWords([{ t: 0 }, { t: 89 * 60000 }]) === 'the last 89 minutes' &&
+      SR.spanWords([{ t: 0 }, { t: 90 * 60000 }]) === 'the last 1.5 hours',
+  );
+  t(
+    'a version is the whole string: nothing before or after',
+    !VS.newer('x2026-10-02.1', '2026-10-01.1') && !VS.newer('2026-10-02.1x', '2026-10-01.1') && VS.versionKey('2026-10-02.1').length === 4,
+  );
+  t('the luminance knee is WCAG’s: a dark grey', Math.abs(F.luminance([10, 10, 10]) - 0.003035) < 1e-5);
+  t('hsl to rgb: pure blue and pure green', F.hslToRgb(240, 100, 50).join() === '0,0,255' && F.hslToRgb(120, 100, 50).join() === '0,255,0');
+}
+// ---- markup: what a tile, a detail and a word say
+{
+  const now = { height: 152103, size: 617, nTx: 2 };
+  t(
+    'a mined tile’s age is from when it reached this tab; from its header when it did not arrive on its own, and said so',
+    /^block 152,103, 4 min ago:/.test(V.minedTile(now, { ageS: 240 }).label) &&
+      /header 4 min ago/.test(V.minedTile(now, { ageS: 240, ageFrom: 'header' }).label) &&
+      /header 25 min ahead/.test(V.minedTile(now, { ageS: -1500, ageFrom: 'header' }).html),
+  );
+  t(
+    'unsigned: the age and "not signed yet" together',
+    /38 s ago · not signed yet/.test(V.minedTile(now, { ageS: 38, unsigned: true }).html),
+  );
+  t('a tile is pluralised: 1 transaction, 1 byte', /1 transaction, 1 byte/.test(V.minedTile({ height: 1, size: 1, nTx: 1 }, {}).label));
+  t('the height on a tile has its separators', /<span class="h">152,103<\/span>/.test(V.minedTile(now, {}).html));
+  t('"of N known" only when fewer were known', !/known/.test(V.minedTile(now, { med: 1, known: 3, others: 3 }).html));
+  const b = P.packBlocks([tx('a', 100, 10), tx('b', 300, 2), tx('c', 100, 20)])[0];
+  t('a projected tile shows the median by size, not by count', /~2\.0 sat\/vB/.test(V.projTile(b, 0).html) && b.med === 10);
+  t(
+    'a projected tile carries a word on the node’s build when it is not built',
+    /built on an earlier mempool/.test(V.projTile(b, 0, { note: 'built on an earlier mempool' }).label),
+  );
+  const rt = V.remainderTile({ count: 40, vb: 450000, blocks: 3 });
+  t('the remainder: "+3 blocks", its vB and transactions', /\+3 blocks/.test(rt.html) && /450,000 vB · 40 tx/.test(rt.html));
+  const mt = (o) => V.mempoolTxDetail({ txid: id('a'), vsize: 1, fee: 1, feeRate: 1, at: 1, fed: true, inputs: [], outputs: [] }, o);
+  t(
+    'a mempool transaction says where it would go and when, and that a node fed it',
+    /in the next block/.test(mt({ block: 0 })) &&
+      /in projected block 3, in ~60 min/.test(mt({ block: 2 })) &&
+      /beyond the projected blocks/.test(mt()) &&
+      /from a node’s mempool/.test(mt()),
+  );
+  const sw = { counted: true, words: '', seen: 0, others: 2, knownCount: 0, knownFees: 0 };
+  const bd = V.blockDetail(
+    { height: 9, hash: id('h'), time: 100, nTx: 3, size: 900, txids: [id('c'), id('x'), id('y')], arrivedAt: 200000 },
+    { sw, seenTx: new Map([[id('x'), { vsize: 1, fee: 1, feeRate: 1, at: 140 }]]), signedWords: 's', inMempool: 2 },
+  );
+  t(
+    'a block detail: when it reached this tab, the coinbase not marked unseen, two still listed, the note on history',
+    /Reached this tab/.test(bd) &&
+      /1 min before the block/.test(bd) &&
+      (bd.match(/<td>not seen<\/td>/g) ?? []).length === 1 &&
+      /2 still listed/.test(bd) &&
+      /keeps no history/.test(bd),
+  );
+  t(
+    'every link out opens apart from this page (noopener)',
+    (bd.match(/target="_blank"/g) ?? []).length === (bd.match(/rel="noopener"/g) ?? []).length,
+  );
+  // every view function, given markup where a value goes, puts out none of it
+  const X = '<img src=x onerror=alert(1)>"\'';
+  const xtx = { txid: X, vsize: X, fee: X, feeRate: 1, at: 1, inputs: [X + ':0'], outputs: [{ value: X, scriptPubKey: X }] };
+  const xb = { txs: [xtx], vsize: X, fees: X, min: 1, max: 2, wmed: 1 };
+  const xblock = { height: X, hash: X, time: 1, nTx: X, size: X, txids: [X, X], arrivedAt: 1, fees: X };
+  const out = [
+    V.projTile(xb, 0, { built: { txs: X }, note: X }),
+    V.emptyNextTile({ words: X }),
+    V.minedTile(xblock, { med: 1, known: 0, others: 5, seenWords: X }),
+    V.remainderTile({ count: X, vb: X, blocks: X }),
+    {
+      html: V.blockDetail(xblock, {
+        sw: { counted: false, words: X, seen: X, others: X, knownCount: 1, knownFees: X },
+        seenTx: new Map([[X, { vsize: X, fee: X, feeRate: 1, at: 0 }]]),
+        signedWords: X,
+        inMempool: X,
+        foundTxid: X,
+      }),
+    },
+    { html: V.projDetail(xb, 0, { tw: { text: X, differs: true }, asOf: X }) },
+    { html: V.mempoolTxDetail(xtx, { block: 1 }) },
+    { html: V.notFoundWords({ where: 'seen', seen: { at: 1, vsize: X, feeRate: 1 } }) },
+  ];
+  t(
+    'markup in any value is escaped by every view function (tiles, details, words)',
+    out.every((o) => !/<img|onerror=alert\(1\)>/.test(o.html)),
+    out.findIndex((o) => /<img|onerror=alert\(1\)>/.test(o.html)),
+  );
+}
+// ---- the throttle on the real clock
+{
+  let calls = 0;
+  const go = SD.throttle(() => calls++, 50);
+  go();
+  go();
+  await new Promise((r) => setTimeout(r, 20));
+  const first = calls;
+  go();
+  await new Promise((r) => setTimeout(r, 20));
+  const between = calls;
+  await new Promise((r) => setTimeout(r, 60));
+  t(
+    'on the real clock: the first runs at once, a second waits its 50 ms, then runs',
+    first === 1 && between === 1 && calls === 2,
+    `${first} ${between} ${calls}`,
   );
 }
 done();

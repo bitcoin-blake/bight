@@ -5,7 +5,7 @@
 // The decisions (packing, bands, what was seen first, the chain cache, search, the status words, the sources, the
 // settings, the markup of tiles and details) are lib/*.mjs, tested; this file wires them to the document, patching in
 // place so a focused or selected element survives the next update.
-export const VERSION = '2026-10-01.3';
+export const VERSION = '2026-10-01.4';
 const $ = (id) => document.getElementById(id);
 const NODE = 'https://cdn.jsdelivr.net/gh/bitcoin-blake/blaketestnode@c03bf56404e986bf633a44d8a7bbb530ec282cb5';
 const RELAYS = [
@@ -68,44 +68,91 @@ const reloadWith = (set = {}, drop = []) => {
   location.replace(location.pathname + (s ? '?' + s : ''));
 };
 
-// ---- notices: one line each under the top bar; said to screen readers when a notice is new or grows more serious, not
-// on every change of its words (a count of minutes would otherwise be spoken once a minute)
+// ---- notices: one line each under the top bar, patched in place (a focused button in one survives a change of its words);
+// said to screen readers when a notice is new or grows more serious, not on every change of its words (a count of minutes
+// would otherwise be spoken once a minute)
 const RANK = { info: 0, warn: 1, bad: 2 };
 function banner(id, cls, text, actions = []) {
   let el = document.querySelector(`#banners [data-b="${id}"]`);
-  if (el && el.dataset.text === cls + text) return;
+  const sig = actions.map(([l]) => l).join('\n');
+  if (el && el.dataset.text === cls + text && el.dataset.sig === sig) return;
   const prev = el?.dataset.cls;
   if (!el) {
     el = document.createElement('div');
     el.dataset.b = id;
+    el.appendChild(document.createElement('span'));
     $('banners').appendChild(el);
   }
   el.dataset.text = cls + text;
   el.dataset.cls = cls;
   el.className = 'banner ' + cls;
-  el.textContent = '';
-  const t = document.createElement('span');
-  t.textContent = text;
-  el.appendChild(t);
-  for (const [label, fn] of actions) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'btn';
-    b.textContent = label;
-    b.onclick = fn;
-    el.appendChild(b);
-  }
+  el.firstChild.textContent = text;
+  const btns = [...el.querySelectorAll('button')];
+  if (el.dataset.sig !== sig) {
+    // the buttons change only when their labels do; otherwise only what they do is updated
+    for (const b of btns) b.remove();
+    for (const [label, fn] of actions) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn';
+      b.textContent = label;
+      b.onclick = fn;
+      el.appendChild(b);
+    }
+    el.dataset.sig = sig;
+  } else btns.forEach((b, i) => (b.onclick = actions[i][1]));
   if (prev == null || (RANK[cls] ?? 0) > (RANK[prev] ?? 0)) say(text);
 }
-const unbanner = (id) => document.querySelector(`#banners [data-b="${id}"]`)?.remove();
+// a notice that goes while it holds the focus first hands the focus on (to the next notice's button, else the search), so
+// a keyboard user is not dropped at the top of the page
+const unbanner = (id) => {
+  const el = document.querySelector(`#banners [data-b="${id}"]`);
+  if (!el) return;
+  if (el.contains(document.activeElement)) {
+    const next = [...document.querySelectorAll('#banners [data-b] button')].find((b) => !el.contains(b));
+    (next ?? $('q')).focus();
+  }
+  el.remove();
+};
+// what is said to screen readers, one at a time, so a second message does not cut off the first
+const sayQueue = [];
+let saying = false;
 const say = (text) => {
-  $('announce').textContent = '';
-  setTimeout(() => ($('announce').textContent = text), 50);
+  if (!text || sayQueue.at(-1) === text) return;
+  sayQueue.push(text);
+  if (saying) return;
+  saying = true;
+  const next = () => {
+    const t = sayQueue.shift();
+    if (t == null) return (saying = false);
+    $('announce').textContent = '';
+    setTimeout(() => {
+      $('announce').textContent = t;
+      setTimeout(next, 1500);
+    }, 50);
+  };
+  next();
 };
 const fatal = (text) => {
   $('syncmsg').textContent = text;
   banner('fatal', 'bad', text, [['Reload', () => location.reload()]]);
 };
+// in a frame whose page is on another site, nothing that downloads, trusts a source or overrides the lock is done on a click
+// (the page around it could have placed that click); it says to open Bight in its own tab instead
+const foreignFrame = (() => {
+  if (top === self) return false;
+  try {
+    return top.location.origin !== location.origin;
+  } catch {
+    return true;
+  }
+})();
+const ownTab = () => {
+  const u = new URL(location.href);
+  u.searchParams.delete('embedded');
+  return u.href;
+};
+const openOwnTab = () => window.open(ownTab(), '_blank', 'noopener');
 
 // ---- a cached page and a script from different releases: reload once for this pair of versions (only if the browser
 // can remember that it did, or it would reload for ever), and run nothing meanwhile
@@ -120,10 +167,10 @@ const fatal = (text) => {
 
 // ---- the code: the node's loader from the CDN (with a deadline: a CDN that hangs would leave "Starting…" for ever), then
 // this page's own modules, cache-busted with the version so a page never runs another release's modules
-let createTabNode, mib, PARAMS, P, F, SE, SR, SC, FM, NT, ST, SO, VS, CH, SD, SET, V;
+let createTabNode, PARAMS, P, F, SE, SR, SC, FM, NT, ST, SO, VS, CH, SD, SET, V;
 try {
   const deadline = new Promise((_, no) => setTimeout(() => no(new Error('no answer in 20 seconds')), 20e3));
-  [{ createTabNode, mib }, PARAMS] = await Promise.race([
+  [{ createTabNode }, PARAMS] = await Promise.race([
     Promise.all([import(`${NODE}/browser/tabnode.js`), import(`${NODE}/lib/params.mjs`)]),
     deadline,
   ]);
@@ -135,9 +182,18 @@ try {
 const { esc, n, fmtAge, txUrl } = FM;
 $('ver').textContent = VERSION;
 const SNAP_BASE = PARAMS.SNAPSHOT.baseHeight;
+const SNAP_SIZE = `${Math.round(PARAMS.SNAPSHOT.bytes / 2 ** 20)} MB`;
+// the welcome's figures, from the node this page pins (the page's own text is checked against them in CI)
+$('wl-base').textContent = n(SNAP_BASE);
+$('wl-size').textContent = SNAP_SIZE;
 
 // ---- the sources: stored, or proposed by a link and used only if the person agrees, for this visit
-const SRC = SO.resolveSources({ get: LS.get, query: q, accepted: (k) => SS.get('bight:accept:' + k) });
+const DEFS = SO.defaultsFor(PARAMS);
+const SRC = SO.resolveSources({ get: LS.get, query: q, accepted: (k) => SS.get('bight:accept:' + k), defaults: DEFS });
+const storedSources = (app) => ({
+  snapshot: SO.storedValue(LS.get(app + ':snapshot')),
+  blocks: SO.storedValue(LS.get(app + ':blocks')),
+});
 for (const k of Object.keys(SRC.proposed))
   if (SRC.use[k] !== SRC.proposed[k]) {
     const v = SRC.proposed[k];
@@ -148,8 +204,9 @@ for (const k of Object.keys(SRC.proposed))
       SO.validUrl(v)
         ? [
             [
-              'Use it for this visit',
+              foreignFrame ? 'Open Bight in its own tab to choose' : 'Use it for this visit',
               () => {
+                if (foreignFrame) return openOwnTab();
                 if (SS.set('bight:accept:' + k, v)) location.reload();
               },
             ],
@@ -160,7 +217,7 @@ for (const k of Object.keys(SRC.proposed))
   }
 // a source that is not the default, in use: said for as long as it is, with the way back
 {
-  const custom = SO.nonDefault(SRC.use);
+  const custom = SO.nonDefault(SRC.use, DEFS);
   if (custom.length)
     banner(
       'custom-src',
@@ -171,12 +228,7 @@ for (const k of Object.keys(SRC.proposed))
           'Back to the default',
           () => {
             for (const k of ['snapshot', 'blocks']) SS.del('bight:accept:' + k);
-            const w = SET.sourceWrites({
-              fields: { snapshot: SO.DEFAULT_SNAP, blocks: SO.DEFAULT_BLOCKS },
-              bight: { snapshot: SO.validUrl(LS.get('bight:snapshot')), blocks: SO.validUrl(LS.get('bight:blocks')) },
-              reef: { snapshot: SO.validUrl(LS.get('reef:snapshot')), blocks: SO.validUrl(LS.get('reef:blocks')) },
-              defaults: { snapshot: SO.DEFAULT_SNAP, blocks: SO.DEFAULT_BLOCKS },
-            });
+            const w = SET.sourceWrites({ fields: DEFS, bight: storedSources('bight'), reef: storedSources('reef'), defaults: DEFS });
             for (const x of w) x.del ? LS.del(x.key) : LS.set(x.key, x.set);
             reloadWith({}, ['snapshot', 'blocks']);
           },
@@ -190,17 +242,28 @@ const tn = createTabNode({ base: NODE, snapshotUrl: SRC.use.snapshot, blocksUrl:
 const node = tn.node;
 window.bight = { node, OPT, VERSION };
 const state = {
-  blocks: new Map(), // height → { height, hash, prev, time, nTx, size, txids, arrivedAt }
+  blocks: new Map(), // height → { height, hash, prev, time, nTx, size, txids, arrivedAt (ms) }: the last ones, for the tiles
+  found: new Map(), // height → block: older blocks asked by a search, kept apart from the tiles (the last few)
   wanted: new Map(), // height → when asked
-  arrived: new Map(), // height → when this page learned of it (s)
+  arrived: new Map(), // height → { at (ms), alone }: when this page learned of it (chain.markArrived)
+  gen: 0, // the generation of the block requests: a reorganisation starts a new one, and older replies are ignored
   seenTx: new Map(),
   refusals: [],
   samples: [],
   template: null,
   selected: null, // height of the mined block shown in the detail
-  opener: null, // { kind: 'p' | 'h' | 'q', key } what opened the detail, for the focus on Close
+  selectedProj: null, // index of the projected block shown in the detail
+  opener: null, // { kind: 'p' | 'h' | 'r' | 'q', key } what opened the detail, for the focus on Close
+  pendingTx: null, // { txid, opener, timer }: a transaction asked of the node for the detail
+  pendingSearch: null, // { height, gen, timer }: a block asked of the node by a search
   highlight: null,
-  followedAt: null, // when the first mempool state arrived (s)
+  followedAt: null, // when the page last began listening without a gap (ms): the first mempool state, moved on after a gap
+  followStartedAt: null, // when the first mempool state arrived (ms)
+  feedBeat: null, // the node's last heartbeat value, and when this page saw it change (ms, this browser's clock)
+  feedSeenAt: null,
+  lastTick: Date.now(),
+  lastSampleAt: 0,
+  announcedSync: false,
   following: false,
   running: false,
   idle: false,
@@ -209,7 +272,17 @@ const state = {
   log: [],
 };
 const now = () => Math.floor(Date.now() / 1000);
-const list = () => P.mempoolList(node.mempool);
+// the mempool as a list, computed once per state the node sends
+let listOf = null,
+  listMemo = [];
+const list = () => {
+  if (node.mempool !== listOf) {
+    listOf = node.mempool;
+    listMemo = P.mempoolList(node.mempool);
+  }
+  return listMemo;
+};
+const blockAt = (h) => state.blocks.get(h) ?? state.found.get(h);
 
 // ---- status bar, pill and the node's state in words
 tn.on('sync', ({ msg, pct, eta }) => {
@@ -228,7 +301,7 @@ function pill() {
   $('pilldot').className = p.level;
   $('pilltxt').textContent = p.text;
   $('nodeinfo').textContent = node.st
-    ? `${node.coins ? n(node.coins) + ' coins · ' : ''}${node.recv ? mib(node.recv) + ' fetched this session' : "from this browser's storage"}`
+    ? `${node.coins ? n(node.coins) + ' coins · ' : ''}${node.recv ? FM.fmtMiB(node.recv) + ' fetched this session' : "from this browser's storage"}`
     : '';
   // what the node says about the chain and its sources, as notices
   if (node.unresponsive) banner('slow', 'warn', ST.plainError('not answered for two minutes'), [['Reload', () => location.reload()]]);
@@ -240,7 +313,7 @@ function pill() {
   if (c && (c.level === 'warn' || c.level === 'bad')) banner('chain', c.level === 'bad' ? 'bad' : 'warn', c.text);
   else unbanner('chain');
   $('chainnote').textContent = c ? c.text : '';
-  const fd = ST.feedState(node.mempool);
+  const fd = ST.feedState(node.mempool, { seenAt: state.feedSeenAt, followedAt: state.followStartedAt });
   if (fd) banner('feed', 'warn', fd.text);
   else unbanner('feed');
 }
@@ -281,36 +354,50 @@ tn.on('synced', (m) => {
     tn.followMempool({ relays: RELAYS });
     $('s-relays').textContent = `${RELAYS.length} asked (the node does not report which answer)`;
   }
-  CH.onSynced(state.blocks, m);
-  CH.markArrived(state.arrived, m, now()); // every height this pass applied reached this tab now
+  const dropped = CH.onSynced(state.blocks, m);
+  // a reorganisation or a rollback: the requests already out may be answered from the branch it replaced, so a new
+  // generation is started, and the heights it replaced are asked again
+  const from = m.height - (m.applied ?? 0) + 1;
+  const replaced = [...state.wanted.keys()].filter((h) => h > m.height || (m.applied > 0 && h >= from && state.arrived.has(h)));
+  if (dropped.length || replaced.length) {
+    state.gen++;
+    for (const h of [...dropped, ...replaced]) state.wanted.delete(h);
+    for (const h of [...state.found.keys()]) if (h > m.height || dropped.includes(h)) state.found.delete(h);
+  }
+  CH.markArrived(state.arrived, m, Date.now()); // every height this pass applied reached this tab now
   document.title = `Bight · txbt4 · ${n(m.height)}`;
   pill();
+  if (!state.announcedSync) {
+    state.announcedSync = true;
+    say(`Up to date at block ${n(m.height)}`);
+  }
   wantBlocks();
   askTemplate();
 });
 function wantBlocks() {
   if (state.wiped || !state.running) return;
   for (const h of CH.wantHeights({ height: node.height, blocks: state.blocks, wanted: state.wanted, now: Date.now(), floor: SNAP_BASE }))
-    tn.post({ type: 'block', height: h, req: 'bight' });
+    tn.post({ type: 'block', height: h, req: CH.reqOf(state.gen) });
   scheduleRender();
 }
+const blockOf = (m) => ({
+  height: m.height,
+  hash: m.hash,
+  prev: m.previousblockhash,
+  time: m.header?.time ?? null,
+  nTx: m.nTx,
+  size: m.size,
+  txids: m.txids ?? [],
+  arrivedAt: state.arrived.get(m.height)?.at ?? null,
+  fees: Number.isFinite(m.fees) ? m.fees : null, // only if the node says (a later node, from the coinbase's value)
+});
 tn.on('block', (m) => {
-  if (m.req !== 'bight' || state.wiped) return;
+  const r = CH.parseReq(m.req);
+  if (!r || state.wiped) return;
+  if (r.search) return onSearchBlock(m, r);
+  if (r.gen !== state.gen) return; // asked on a branch a reorganisation replaced: asked again under the new generation
   state.wanted.delete(m.height);
-  const kept = CH.acceptBlock(
-    state.blocks,
-    {
-      height: m.height,
-      hash: m.hash,
-      prev: m.previousblockhash,
-      time: m.header?.time ?? null,
-      nTx: m.nTx,
-      size: m.size,
-      txids: m.txids ?? [],
-      arrivedAt: state.arrived.get(m.height) ?? null,
-    },
-    { tipHeight: node.height, tipHash: node.hash },
-  );
+  const kept = CH.acceptBlock(state.blocks, blockOf(m), { tipHeight: node.height, tipHash: node.hash });
   if (!kept) return;
   if (state.blocks.size > 40) state.blocks.delete(Math.min(...state.blocks.keys()));
   scheduleRender();
@@ -318,15 +405,27 @@ tn.on('block', (m) => {
 });
 
 // ---- the mempool: the loader keeps node.mempool; the page remembers every txid it accepted
-tn.on('mempool', () => {
-  state.followedAt ??= now();
+tn.on('mempool', (mp) => {
+  state.followedAt ??= Date.now();
+  state.followStartedAt ??= Date.now();
+  // the publisher's heartbeat, by this browser's clock: a change seen now is a beat now; the node's first reading is the
+  // file's own time (another computer's clock), never taken as later than now
+  if (mp?.feedFileAt != null && mp.feedFileAt !== state.feedBeat) {
+    state.feedBeat = mp.feedFileAt;
+    state.feedSeenAt = Math.min(mp.feedFileAt, Date.now());
+  }
   SE.rememberSeen(state.seenTx, list());
+  // a sample for the graph from the node's own messages too: a background tab's timers are slowed, its messages are not
+  if (Date.now() - state.lastSampleAt >= 5000) sample();
   scheduleRender();
   askTemplate();
 });
-// the worker's own block for the next height: asked at most every 2 s, and within 2 s of a change however busy the mempool
+// the worker's own block for the next height: asked at most every 2 s, and within 2 s of a change however busy the mempool;
+// whether it is still wanted is decided when the request goes, not when it was queued
 const askTemplate = (() => {
-  const go = SD.throttle(() => tn.post({ type: 'template', pay: '6a00' }), 2000);
+  const go = SD.throttle(() => {
+    if (node.synced && !state.wiped && !state.idle) tn.post({ type: 'template', pay: '6a00' });
+  }, 2000);
   return () => node.synced && !state.wiped && go();
 })();
 tn.on('template', (m) => {
@@ -354,9 +453,16 @@ function renderAll() {
   pill();
 }
 // patch a row of tiles in place: one <button> per key, its content and name updated, moved only when out of place, so
-// the focused one keeps the focus
+// the focused one keeps the focus. What is no longer shown is removed first, so the walk below moves only what is out of
+// order (a stale tile in the way would otherwise make it move every tile after it).
 function patchTiles(container, items) {
-  const have = new Map([...container.children].map((el) => [el.dataset.k, el]));
+  const keys = new Set(items.map((it) => it.key));
+  const have = new Map();
+  for (const el of [...container.children]) {
+    const want = items.find((it) => it.key === el.dataset.k);
+    if (!keys.has(el.dataset.k) || el.tagName !== (want?.tag ?? 'button').toUpperCase()) el.remove();
+    else have.set(el.dataset.k, el);
+  }
   let at = container.firstChild;
   for (const it of items) {
     let el = have.get(it.key);
@@ -365,13 +471,13 @@ function patchTiles(container, items) {
       if (el.tagName === 'BUTTON') el.type = 'button';
       el.dataset.k = it.key;
     }
-    have.delete(it.key);
     if (el.className !== it.cls) el.className = it.cls;
     if (el.dataset.html !== it.html) {
       el.innerHTML = it.html;
       el.dataset.html = it.html;
     }
-    if (it.label != null) el.setAttribute('aria-label', it.label);
+    // a name only on what can have one (a button); a plain box says what it says
+    if (it.label != null && el.tagName === 'BUTTON') el.setAttribute('aria-label', it.label);
     if (it.expanded != null) {
       el.setAttribute('aria-expanded', String(it.expanded));
       el.setAttribute('aria-controls', 'detail');
@@ -380,19 +486,31 @@ function patchTiles(container, items) {
     el.onclick = it.onActivate ?? null;
     if (el !== at) container.insertBefore(el, at);
     else at = at.nextSibling;
-    if (el === at) at = at.nextSibling;
   }
-  for (const el of have.values()) el.remove();
 }
+const EMPTY_BLOCK = { txs: [], vsize: 0, fees: 0, weight: 0, min: null, max: null, med: null, wmed: null };
+// the node's build of the next block in words, judged against the mempool this page shows and the block it packed
+const templateNow = (blocks = state.lastBlocks ?? []) =>
+  NT.templateWords(state.template, node.height, node.hash, node.mempool ? { count: node.mempool.count, block: blocks[0] ?? null } : null);
 function renderProjected(blocks) {
-  const tw = NT.templateWords(state.template, node.height, node.hash);
+  const tw = templateNow(blocks);
+  const note = tw.failed ? 'build fails' : tw.earlier ? 'built on an earlier mempool' : tw.differs ? 'the node’s build differs' : '';
   const items = [];
+  const sel = (i) => state.selectedProj === i;
   if (!blocks.length) {
+    // the same key as the full next block, so the focus stays on it when the mempool empties or fills
     const e = V.emptyNextTile({
       built: !!node.mempool && tw.ok,
       words: ST.emptyWords(node.mempool, { following: state.following }) ?? 'the mempool is empty',
     });
-    items.push({ key: 'empty', cls: 'blk empty', html: e.html, label: e.label, tag: 'div' });
+    items.push({
+      key: 'p0',
+      cls: `blk empty${sel(0) ? ' sel' : ''}`,
+      html: e.html,
+      label: e.label,
+      expanded: sel(0),
+      onActivate: () => showProjected(EMPTY_BLOCK, 0),
+    });
   } else {
     const cov = P.coverage(node.mempool);
     if (cov.truncated)
@@ -402,17 +520,22 @@ function renderProjected(blocks) {
         tag: 'div',
         html: `<span class="h">more</span><span class="s">${esc(n(Math.max(0, cov.totalVb - cov.shownVb)))} vB more in the mempool than this page sees</span>`,
       });
+    const rest = P.remainder(list(), blocks, { rdts: state.template?.rdts ?? true });
+    if (rest.count) {
+      const r = V.remainderTile(rest);
+      items.push({ key: 'rest', cls: 'blk empty more', tag: 'div', html: r.html });
+    }
     // in the order they read: the furthest projection first, the next block beside the chain tip
     for (let i = blocks.length - 1; i >= 0; i--) {
       const b = blocks[i];
-      const built = i === 0 && tw.ok ? state.template : null;
-      const t = V.projTile(b, i, { built, failed: i === 0 && !!tw.failed });
+      const t = V.projTile(b, i, { built: i === 0 && tw.ok ? state.template : null, note: i === 0 ? note : '' });
       const c = F.feeColors(b.wmed);
       items.push({
         key: 'p' + i,
-        cls: 'blk proj',
+        cls: `blk proj${sel(i) ? ' sel' : ''}`,
         html: t.html,
         label: t.label,
+        expanded: sel(i),
         style: { '--c1': c.c1, '--c2': c.c2 },
         onActivate: () => showProjected(b, i),
       });
@@ -443,15 +566,19 @@ function renderMined() {
         .slice(1)
         .map((t) => state.seenTx.get(t))
         .filter(Boolean);
-      const sw = SE.blockSeen(b, state.seenTx, { followedAt: state.followedAt, prevArrivedAt: state.arrived.get(h - 1) ?? null });
+      const sw = seenOf(b);
       const unsigned = sh == null || h > sh;
+      // how long ago it reached this tab, when it was watched arriving on its own; one that came in a catch-up (the first
+      // sync, after sleep) is aged by its header, and says so
+      const fromArrival = b.arrivedAt != null && !!state.arrived.get(h)?.alone;
       const t = V.minedTile(b, {
         med: P.weightedMedian(known),
         known: known.length,
         others: sw.others,
         seenWords: sw.words,
         unsigned,
-        ageS: Math.max(0, now() - (b.time ?? now())),
+        ageS: fromArrival ? Math.round((Date.now() - b.arrivedAt) / 1000) : now() - (b.time ?? now()),
+        ageFrom: fromArrival ? 'arrival' : 'header',
       });
       return {
         key: 'h' + h,
@@ -464,31 +591,72 @@ function renderMined() {
     }),
   );
 }
-// the detail panel takes the focus when it opens and gives it back to what opened it when it closes
-function openDetail(html, opener, { focus = true } = {}) {
+const seenOf = (b) =>
+  SE.blockSeen(b, state.seenTx, {
+    followedAt: state.followedAt,
+    arrival: state.arrived.get(b.height) ?? null,
+    prevArrival: state.arrived.get(b.height - 1) ?? null,
+  });
+// the detail panel takes the focus when it opens (the region's name, its title, is then read; it is not said again) and
+// gives it back to what opened it when it closes; Close sits in its header, and Escape closes it
+function openDetail(html, opener, { focus = true, keepPending = false } = {}) {
+  if (!keepPending) dropPending();
   const d = $('detail');
+  // the focus on something inside the detail (Close) would be lost with the content: it goes to the detail itself
+  const inside = d.contains(document.activeElement) && document.activeElement !== d;
   d.hidden = false;
-  d.innerHTML = html + '<div class="dfoot"><button class="btn" type="button" id="dclose">Close</button></div>';
+  const close = '<button class="btn" type="button" id="dclose">Close</button>';
+  const m = /^(<h2 id="dtitle">[\s\S]*?<\/h2>)/.exec(html);
+  d.innerHTML = m ? `<div class="dhead">${m[1]}${close}</div>${html.slice(m[1].length)}` : `<div class="dhead">${close}</div>${html}`;
   state.opener = opener;
   $('dclose').onclick = closeDetail;
-  if (focus) d.focus();
-  const h = d.querySelector('#dtitle');
-  if (h) say(h.textContent);
+  if (focus || inside) d.focus();
+  if (!focus) {
+    const h = d.querySelector('#dtitle');
+    if (h && d.dataset.said !== h.textContent) say(h.textContent);
+  }
+  d.dataset.said = d.querySelector('#dtitle')?.textContent ?? '';
+}
+$('detail').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('detail').hidden) {
+    e.preventDefault();
+    closeDetail();
+  }
+});
+// a transaction or a block asked of the node for the detail is forgotten when the detail closes or shows something else
+function dropPending() {
+  for (const k of ['pendingTx', 'pendingSearch']) {
+    clearTimeout(state[k]?.timer);
+    state[k] = null;
+  }
 }
 function closeDetail() {
+  dropPending();
   $('detail').hidden = true;
+  $('detail').dataset.said = '';
   const o = state.opener;
   state.selected = null;
+  state.selectedProj = null;
   renderMined();
-  const back = o?.kind === 'q' ? $('q') : o ? document.querySelector(`[data-k="${o.kind}${o.key}"]`) : null;
+  renderProjected(state.lastBlocks ?? []);
+  const back =
+    o?.kind === 'q'
+      ? $('q')
+      : o?.kind === 'r'
+        ? document.querySelector(`#rows tr[data-t="${o.key}"] .txbtn`)
+        : o
+          ? document.querySelector(`[data-k="${o.kind}${o.key}"]`)
+          : null;
   (back ?? $('q')).focus();
 }
-function showBlock(h, { focus = true, foundTxid = null } = {}) {
-  const b = state.blocks.get(h);
+function showBlock(h, { focus = true, foundTxid = null, opener = null } = {}) {
+  const b = blockAt(h);
   if (!b) return;
-  state.selected = h;
+  state.selected = state.blocks.has(h) ? h : null;
+  state.selectedProj = null;
   renderMined();
-  const sw = SE.blockSeen(b, state.seenTx, { followedAt: state.followedAt, prevArrivedAt: state.arrived.get(h - 1) ?? null });
+  renderProjected(state.lastBlocks ?? []);
+  const sw = seenOf(b);
   const mpIds = new Set(list().map((x) => x.txid));
   const sh = ST.signedHeight(node.nostr);
   openDetail(
@@ -504,25 +672,21 @@ function showBlock(h, { focus = true, foundTxid = null } = {}) {
       inMempool: b.txids.filter((t) => mpIds.has(t)).length,
       foundTxid,
     }),
-    foundTxid ? { kind: 'q' } : { kind: 'h', key: h },
+    opener ?? (foundTxid || !state.blocks.has(h) ? { kind: 'q' } : { kind: 'h', key: h }),
     { focus },
   );
 }
 function showProjected(b, i) {
   state.selected = null;
+  state.selectedProj = i;
+  state.highlight = null;
   renderMined();
-  const tw = NT.templateWords(state.template, node.height, node.hash);
-  openDetail(
-    V.projDetail(b, i, {
-      tw: i === 0 && state.template ? tw : null,
-      built: tw.ok ? state.template : null,
-      asOf: new Date().toLocaleTimeString(),
-    }),
-    {
-      kind: 'p',
-      key: i,
-    },
-  );
+  renderProjected(state.lastBlocks ?? []);
+  const tw = templateNow();
+  openDetail(V.projDetail(b, i, { tw: i === 0 && state.template ? tw : null, asOf: new Date().toLocaleTimeString() }), {
+    kind: 'p',
+    key: i,
+  });
 }
 
 // ---- the mempool panel, the histogram, the table
@@ -532,13 +696,13 @@ function renderMempool(blocks) {
   const all = list();
   const cov = P.coverage(m);
   const wmed = P.weightedMedian(all);
-  const tw = NT.templateWords(state.template, node.height, node.hash);
+  const tw = templateNow(blocks);
   $('m-count').textContent = n(m.count);
   $('m-size').textContent = `${n(m.bytes)} vB`;
   $('m-fees').textContent = `${n(m.fees)} sat`;
   $('m-med').textContent = wmed != null ? `${wmed.toFixed(1)} sat/vB${cov.truncated ? ' (of those shown)' : ''}` : '—';
   $('m-next').textContent = tw.text;
-  $('m-next').classList.toggle('badt', !!tw.failed);
+  $('m-next').classList.toggle('badt', !!tw.failed && !tw.stale);
   $('m-cover').textContent = cov.truncated
     ? `This page sees the top ${n(cov.shown)} of ${n(cov.total)} transactions by fee rate; the bands, the median, the projected blocks and the table cover those.`
     : '';
@@ -546,8 +710,8 @@ function renderMempool(blocks) {
   $('s-acc').textContent = n(m.stats.accepted);
   $('s-ref').textContent = n(m.stats.refused);
   $('s-drop').textContent = n(m.stats.dropped);
-  $('s-feed').textContent = m.feedFileAt
-    ? `${fmtAge(Math.max(0, now() - Math.floor(m.feedFileAt / 1000)))} ago`
+  $('s-feed').textContent = state.feedSeenAt
+    ? `${fmtAge(Math.max(0, Math.round((Date.now() - state.feedSeenAt) / 1000)))} ago`
     : m.following
       ? 'not yet'
       : '…';
@@ -590,8 +754,13 @@ function renderRows(all, blocks) {
     tb.innerHTML = `<tr><td colspan="6" class="mut">${esc(ST.emptyWords(node.mempool, { following: state.following }) ?? 'empty')}</td></tr>`;
     return;
   }
-  const have = new Map([...tb.querySelectorAll('tr[data-t]')].map((tr) => [tr.dataset.t, tr]));
-  [...tb.querySelectorAll('tr:not([data-t])')].forEach((tr) => tr.remove());
+  // what is no longer listed goes first (but not a row holding the focus), so the walk moves only what is out of order
+  const keep = new Set(rows.map((t) => t.txid));
+  const have = new Map();
+  for (const tr of [...tb.children]) {
+    if (tr.dataset.t && (keep.has(tr.dataset.t) || tr.contains(document.activeElement))) have.set(tr.dataset.t, tr);
+    else tr.remove();
+  }
   let at = tb.firstChild;
   for (const t of rows) {
     let tr = have.get(t.txid);
@@ -601,7 +770,6 @@ function renderRows(all, blocks) {
       tr = document.createElement('tr');
       tr.dataset.t = t.txid;
     }
-    have.delete(t.txid);
     if (tr.dataset.html !== html) {
       tr.innerHTML = html;
       tr.dataset.html = html;
@@ -610,45 +778,72 @@ function renderRows(all, blocks) {
     tr.querySelector('.age').textContent = fmtAge(Math.max(0, t0 - t.at));
     if (tr !== at) tb.insertBefore(tr, at);
     else at = at.nextSibling;
-    if (tr === at) at = at.nextSibling;
   }
-  for (const tr of have.values()) if (!tr.contains(document.activeElement)) tr.remove();
+  // a focused row no longer listed stays, after the others, until the focus leaves it
+  for (const tr of have.values()) if (!keep.has(tr.dataset.t) && !tr.contains(document.activeElement)) tr.remove();
 }
 $('rows').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-open]');
-  if (b) openTx(b.dataset.open, { kind: 'q' });
+  if (b) openTx(b.dataset.open, { kind: 'r', key: b.dataset.open });
 });
 // one transaction of the mempool, in the page: from the full copy the node sent when it has one, else asked of the node
+// (given up after 15 s); with where it would go in the projected blocks
 function openTx(txid, opener) {
   const full = (node.mempool?.txs ?? []).find((x) => x.txid === txid);
   state.highlight = txid;
+  state.selected = null;
+  state.selectedProj = null;
   scheduleRender();
-  if (full) return openDetail(V.mempoolTxDetail(full), opener);
-  state.pendingTx = { txid, opener };
-  tn.post({ type: 'mempool-get', txid, req: 'bight' });
+  const block = P.blockIndex(state.lastBlocks ?? []).get(txid) ?? null;
+  if (full) return openDetail(V.mempoolTxDetail(full, { block }), opener);
   openDetail(`<h2 id="dtitle">In this tab's mempool</h2><p class="mut">asking the node for ${esc(txid.slice(0, 20))}…</p>`, opener);
+  const timer = setTimeout(() => {
+    if (state.pendingTx?.txid !== txid) return;
+    state.pendingTx = null;
+    openDetail(
+      `<h2 id="dtitle">No answer</h2><p class="mut">the node did not answer for ${esc(txid.slice(0, 20))}… in 15 seconds; search again to retry</p>`,
+      opener,
+      { focus: false },
+    );
+  }, 15e3);
+  state.pendingTx = { txid, opener, timer, block };
+  tn.post({ type: 'mempool-get', txid, req: 'bight' });
 }
 function onMempoolTx(m) {
   if (m.req !== 'bight' || state.pendingTx?.txid !== m.txid) return;
-  const { opener } = state.pendingTx;
-  state.pendingTx = null;
+  const { opener, block } = state.pendingTx;
+  dropPending();
   openDetail(
     m.found
-      ? V.mempoolTxDetail(m)
+      ? V.mempoolTxDetail(m, { block })
       : `<h2 id="dtitle">Not found</h2><p class="mut">no longer in this tab's mempool: confirmed or dropped</p>`,
     opener,
+    { focus: false },
   );
 }
-// every 5 s: a sample for the graph, and the ages
+// every 5 s: a sample for the graph, the ages, and a check for a gap in listening: when the timer comes back much later than
+// it should (the computer slept, or the browser froze or slowed a background tab), the transactions of that time may not
+// have been heard, so "seen first" counts only blocks after it
+function sample() {
+  if (!node.mempool) return;
+  state.lastSampleAt = Date.now();
+  SR.pushSample(state.samples, { t: Date.now(), count: node.mempool.count, vb: node.mempool.bytes });
+  if (!document.hidden) drawGraph();
+}
+const listeningGap = () => {
+  if (state.followedAt != null) state.followedAt = Date.now();
+};
 setInterval(() => {
+  const t = Date.now();
+  if (t - state.lastTick > 30e3) listeningGap();
+  state.lastTick = t;
   if (state.wiped || state.idle) return;
-  if (node.mempool) {
-    SR.pushSample(state.samples, { t: Date.now(), count: node.mempool.count, vb: node.mempool.bytes });
-    if (!document.hidden) drawGraph();
-  }
+  if (t - state.lastSampleAt >= 4500) sample();
   wantBlocks();
   scheduleRender();
 }, 5000);
+addEventListener('online', listeningGap);
+document.addEventListener('resume', listeningGap); // a frozen tab brought back
 function drawGraph() {
   const c = $('g');
   const W = (c.width = c.clientWidth * devicePixelRatio),
@@ -679,25 +874,48 @@ function drawGraph() {
     g.lineTo(W - pad, (H * i) / 4);
     g.stroke();
   }
-  const draw = (key, color, dash) => {
-    const { runs, top } = SR.polyline(s, key, { W, H, pad });
-    g.strokeStyle = color;
+  // vB as a filled area under its line, transactions as a line over it; a lone point (gaps on both sides) as a dot
+  const vb = SR.polyline(s, 'vb', { W, H, pad });
+  const acc = cv('--acc', '#f0a04b');
+  g.fillStyle = acc;
+  g.globalAlpha = 0.28;
+  for (const r of vb.runs) {
+    if (r.length < 2) continue;
+    g.beginPath();
+    g.moveTo(r[0][0], H - pad);
+    for (const [X, Y] of r) g.lineTo(X, Y);
+    g.lineTo(r.at(-1)[0], H - pad);
+    g.closePath();
+    g.fill();
+  }
+  g.globalAlpha = 1;
+  const line = (runs, color) => {
+    g.strokeStyle = g.fillStyle = color;
     g.lineWidth = 1.5 * devicePixelRatio;
-    g.setLineDash(dash.map((x) => x * devicePixelRatio));
     for (const r of runs) {
+      if (r.length === 1) {
+        g.beginPath();
+        g.arc(r[0][0], r[0][1], 2.5 * devicePixelRatio, 0, 2 * Math.PI);
+        g.fill();
+        continue;
+      }
       g.beginPath();
       r.forEach(([X, Y], i) => (i ? g.lineTo(X, Y) : g.moveTo(X, Y)));
       g.stroke();
     }
-    g.setLineDash([]);
-    return top;
   };
-  const maxVb = draw('vb', cv('--acc', '#f0a04b'), [5, 4]);
-  const maxN = draw('count', cv('--blue', '#4a90e2'), []);
-  $('gmax').textContent = maxN || maxVb ? `top of the graph: ${n(maxN)} transactions, ${n(maxVb)} vB` : 'empty all the time shown';
+  line(vb.runs, acc);
+  const cnt = SR.polyline(s, 'count', { W, H, pad });
+  line(cnt.runs, cv('--blue', '#4a90e2'));
+  const maxVb = vb.top,
+    maxN = cnt.top;
+  const gaps = cnt.runs.length - 1;
+  $('gmax').textContent =
+    (maxN || maxVb ? `top of the graph: ${FM.pl(maxN, 'transaction')}, ${n(maxVb)} vB` : 'empty all the time shown') +
+    (gaps ? ` · ${FM.pl(gaps, 'gap')} where this tab was in the background or asleep and not sampling` : '');
   c.setAttribute(
     'aria-label',
-    `Mempool over ${SR.spanWords(s)}: now ${n(s.at(-1).count)} transactions and ${n(s.at(-1).vb)} vB; at most ${n(maxN)} and ${n(maxVb)}`,
+    `Mempool over ${SR.spanWords(s)}: now ${FM.pl(s.at(-1).count, 'transaction')} and ${n(s.at(-1).vb)} vB; at most ${n(maxN)} and ${n(maxVb)}`,
   );
 }
 
@@ -715,16 +933,50 @@ $('search').onsubmit = (e) => {
     state.highlight = null;
     return openDetail(`<h2 id="dtitle">Search</h2><p class="mut">${esc(pq.error)}</p>`, { kind: 'q' });
   }
-  const r = SC.locate(pq, { list: list(), blocks: [...state.blocks.values()], seen: state.seenTx });
+  const r = SC.locate(pq, {
+    list: list(),
+    blocks: [...state.blocks.values(), ...[...state.found.values()].filter((b) => !state.blocks.has(b.height))],
+    seen: state.seenTx,
+  });
   state.highlight = r.where === 'mempool' ? r.tx.txid : null;
+  state.selectedProj = null;
   scheduleRender();
-  if (r.where === 'mempool') openTx(r.tx.txid, { kind: 'q' });
-  else if (r.where === 'block') showBlock(r.height, { foundTxid: r.txid ?? null });
-  else
-    openDetail(`<h2 id="dtitle">Not found</h2><p class="mut">${esc(V.notFoundWords(r, { count: node.mempool?.count ?? 0 }))}</p>`, {
+  if (r.where === 'mempool') return openTx(r.tx.txid, { kind: 'q' });
+  if (r.where === 'block') return showBlock(r.height, { foundTxid: r.txid ?? null, opener: { kind: 'q' } });
+  // a height this tab does not hold: any block between the snapshot and the tip is asked of the node
+  const range = r.height != null ? SC.heightRange(r.height, { floor: SNAP_BASE, tip: node.synced ? node.height : null }) : null;
+  if (range === 'ask') {
+    openDetail(`<h2 id="dtitle">Block ${esc(n(r.height))}</h2><p class="mut">asking the node for block ${esc(n(r.height))}…</p>`, {
       kind: 'q',
     });
+    const timer = setTimeout(() => {
+      if (state.pendingSearch?.height !== r.height) return;
+      state.pendingSearch = null;
+      openDetail(
+        `<h2 id="dtitle">Block ${esc(n(r.height))}</h2><p class="mut">the node did not answer in 15 seconds; search again to retry</p>`,
+        { kind: 'q' },
+        { focus: false },
+      );
+    }, 15e3);
+    state.pendingSearch = { height: r.height, gen: state.gen, timer };
+    tn.post({ type: 'block', height: r.height, req: CH.reqOf(state.gen, true) });
+    return;
+  }
+  if (r.where === 'none') r.searched = SC.searchedOf([...state.blocks.values()]); // the last blocks, not those a search fetched
+  openDetail(
+    `<h2 id="dtitle">Not found</h2><p class="mut">${esc(V.notFoundWords(r, { count: node.mempool?.count ?? 0, range, floor: SNAP_BASE, tip: node.height }))}</p>`,
+    { kind: 'q' },
+  );
 };
+// a block a search asked for: kept apart from the tiles (the last few), and shown if that search is still the one open
+function onSearchBlock(m, r) {
+  if (r.gen !== state.gen || !m.hash) return;
+  state.found.set(m.height, blockOf(m));
+  while (state.found.size > 10) state.found.delete(state.found.keys().next().value);
+  if (state.pendingSearch?.height !== m.height) return;
+  dropPending();
+  showBlock(m.height, { opener: { kind: 'q' }, focus: false });
+}
 
 // ---- theme
 $('theme').onclick = () => {
@@ -758,7 +1010,7 @@ const fillSettings = (src = SRC.stored, opt = OPT) => {
 };
 $('o-snapshot').oninput = () => {
   $('o-snapnote').textContent =
-    $('o-snapshot').value.trim() !== SRC.stored.snapshot ? 'saving a different snapshot fetches it again: 830 MB' : '';
+    $('o-snapshot').value.trim() !== SRC.stored.snapshot ? `saving a different snapshot fetches it again: ${SNAP_SIZE}` : '';
 };
 $('settings').onclick = () => {
   fillSettings();
@@ -779,7 +1031,7 @@ $('settings').onclick = () => {
   $('dlg').showModal();
 };
 $('o-cancel').onclick = () => $('dlg').close();
-$('o-reset').onclick = () => fillSettings({ snapshot: SO.DEFAULT_SNAP, blocks: SO.DEFAULT_BLOCKS }, SO.OPT_DEFAULTS);
+$('o-reset').onclick = () => fillSettings(DEFS, SO.OPT_DEFAULTS);
 $('o-wipe').onclick = () => {
   if (!state.running || top !== self) return;
   if ($('o-wipe').dataset.armed) {
@@ -792,14 +1044,16 @@ $('o-wipe').onclick = () => {
         LS.del('reef:started');
         LS.del('bight:started');
         $('dlg').close();
-        const left = r?.failed?.length ? ` These could not be removed: ${r.failed.join(', ')}.` : '';
+        pill();
+        // all removed: the page reloads, so the node's worker and its timers end with it, and the reload asks before
+        // fetching again; files left behind are named first, and the reload is left to the person
+        if (!r?.failed?.length) return location.reload();
         banner(
           'wiped',
           'bad',
-          `The node's files are removed; nothing more is shown until you reload, which asks before fetching the snapshot again.${left}`,
+          `The node's files are removed except these: ${r.failed.join(', ')}. Nothing more is shown until you reload, which asks before fetching the snapshot again.`,
           [['Reload', () => location.reload()]],
         );
-        pill();
       },
       (e) => {
         $('o-wipenote').textContent = 'not wiped: ' + (e?.message || e);
@@ -826,9 +1080,9 @@ $('o-ok').onclick = () => {
   tn.setSeed(OPT.seed);
   const w = SET.sourceWrites({
     fields: { snapshot: s, blocks: b },
-    bight: { snapshot: SO.validUrl(LS.get('bight:snapshot')), blocks: SO.validUrl(LS.get('bight:blocks')) },
-    reef: { snapshot: SO.validUrl(LS.get('reef:snapshot')), blocks: SO.validUrl(LS.get('reef:blocks')) },
-    defaults: { snapshot: SO.DEFAULT_SNAP, blocks: SO.DEFAULT_BLOCKS },
+    bight: storedSources('bight'),
+    reef: storedSources('reef'),
+    defaults: DEFS,
   });
   for (const x of w) x.del ? LS.del(x.key) : LS.set(x.key, x.set);
   $('dlg').close();
@@ -873,7 +1127,11 @@ $('o-diag').onclick = async () => {
         }
       : null,
     template: state.template ? NT.templateWords(state.template, node.height, node.hash) : null,
-    sources: Object.fromEntries(['snapshot', 'blocks'].map((k) => [k, SO.nonDefault(SRC.use).includes(k) ? 'custom' : 'default'])),
+    sources: Object.fromEntries(['snapshot', 'blocks'].map((k) => [k, SO.nonDefault(SRC.use, DEFS).includes(k) ? 'custom' : 'default'])),
+    gen: state.gen,
+    followedAt: state.followedAt,
+    feedSeenAt: state.feedSeenAt,
+    foreignFrame,
     consent: !!(LS.get('reef:started') || LS.get('bight:started')),
     storage: est ? { usage: est.usage, quota: est.quota } : null,
     persisted,
@@ -938,13 +1196,15 @@ function lockFailed(err) {
     'bad',
     `This browser refused the lock that keeps one node per browser (${err}). Running anyway is safe only if no other tab of Reef, Bight, Winch or Hitch is open.`,
     [
-      [
-        'Run anyway in this tab',
-        () => {
-          unbanner('lockfail');
-          startNode(true);
-        },
-      ],
+      foreignFrame
+        ? ['Open Bight in its own tab', openOwnTab]
+        : [
+            'Run anyway in this tab',
+            () => {
+              unbanner('lockfail');
+              startNode(true);
+            },
+          ],
     ],
   );
 }
@@ -956,6 +1216,7 @@ async function startNode(force = false) {
     node.lockError = 'this browser has no Web Locks';
     return lockFailed(node.lockError);
   }
+  if (force) node.lockError = null; // run anyway: the refusal is answered, and no longer said
   try {
     const started = await tn.start({ force });
     if (started === false) return node.lockError ? lockFailed(node.lockError) : goIdle();
@@ -976,17 +1237,25 @@ async function startNode(force = false) {
   }
 }
 async function welcome(force = false) {
+  // persistent storage asked first: a browser that grants it may allow more, and the estimate below is then the real one
+  await navigator.storage?.persist?.().catch(() => {});
   const est = await navigator.storage?.estimate?.().catch(() => null);
+  // what the node needs less what it already has here (files kept from an interrupted start count): about 1.1 GB in all
+  const NEED = 1.2e9;
+  const need = est ? Math.max(0, NEED - (est.usage ?? 0)) : NEED;
   const free = est ? est.quota - est.usage : null;
-  const short = free != null && free < 1.2e9;
+  const short = free != null && free < need;
   $('wl-space').textContent =
     free == null
       ? 'The browser does not say how much space it allows.'
       : short
-        ? `The browser allows ${mib(free)} more for this site, less than the 1.1 GB needed. Free disk space first; in a private window, open Bight in an ordinary one instead.`
-        : `The browser allows ${mib(free)} for this site; 1.1 GB is needed.`;
-  $('wl-start').disabled = short;
+        ? `The browser allows ${FM.fmtMiB(free)} more for this site, and the node needs about ${FM.fmtMiB(need)} more. It will likely stop when the space runs out: free disk space first, or, in a private window, open Bight in an ordinary one instead.`
+        : `The browser allows ${FM.fmtMiB(free)} more for this site; the node needs about ${FM.fmtMiB(need)} more.`;
+  $('wl-space').classList.toggle('badt', short);
+  // in a frame on another site, the download is not started by a click there: Bight opens in its own tab
+  $('wl-start').textContent = foreignFrame ? 'Open Bight in its own tab' : short ? 'Start anyway' : 'Start';
   $('wl-start').onclick = () => {
+    if (foreignFrame) return openOwnTab();
     $('welcome').close();
     LS.set('reef:started', String(Date.now()));
     startNode(force);

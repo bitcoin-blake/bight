@@ -9,6 +9,7 @@ import { homedir } from 'node:os';
 import * as NT from '../lib/node-text.mjs';
 import * as P from '../lib/pack.mjs';
 import * as ST from '../lib/status.mjs';
+import * as SO from '../lib/sources.mjs';
 const rd = (f) => readFileSync(new URL('../' + f, import.meta.url), 'utf8');
 const src = rd('bight.js'),
   html = rd('index.html');
@@ -42,12 +43,14 @@ const show = (path) =>
 let worker = '',
   template = '',
   mempool = '',
-  tabnode = '';
+  tabnode = '',
+  params = '';
 try {
   worker = show('browser/worker.js');
   template = show('lib/template.mjs');
   mempool = show('lib/mempool.mjs');
   tabnode = show('browser/tabnode.js');
+  params = show('lib/params.mjs');
 } catch {}
 t('the node at the pin is readable (BLAKETESTNODE)', !!worker);
 const workerPins = [...worker.matchAll(/https:\/\/cdn\.jsdelivr\.net\/gh\/([^'"`]+?@[0-9a-f]{40})/g)].map((m) => m[1]);
@@ -109,8 +112,36 @@ t(
 );
 const tplPost = worker.match(/post\(\{ type: 'template',[^\n]*/)?.[0] ?? '';
 t(
-  'a template reply carries height, hash, prevHash, txs, fees, weight, rdts and its checks',
-  ['height:', 'hash:', 'prevHash:', 'txs:', 'fees:', 'weight:', 'rdts:', 'checks:'].every((f) => tplPost.includes(f)),
+  'a template reply carries height, hash, prevHash, txs, fees, weight, rdts, its checks and the mempool count it was built from',
+  ['height:', 'hash:', 'prevHash:', 'txs:', 'fees:', 'weight:', 'rdts:', 'checks:', 'mempool: chain.mempool ? { count:'].every((f) =>
+    tplPost.includes(f),
+  ),
+);
+t(
+  'a template’s txs leaves the coinbase out (as the page counts its packed block)',
+  /txids = chosen\.map\(\(e\) => e\.txid\)/.test(template),
+);
+const syncedPost = worker.match(/post\(\{ type: 'synced',[^\n]*/)?.[0] ?? '';
+t(
+  'a synced message carries the height, the tip hash, its time and how many blocks the pass applied',
+  ['height: chain.node.height', 'hash: chain.node.tipHash()', 'time:', 'applied'].every((f) => syncedPost.includes(f)),
+  syncedPost.slice(0, 200),
+);
+const nostrNext = worker.match(/const next = \{ height: t\.height[^;]*\};/)?.[0] ?? '';
+t(
+  'the signed tip carries height, hash, agree, diverged, live, kept and vouchedTo, and the loader keeps it as node.nostr',
+  ['height:', 'hash:', 'agree', 'diverged', 'live:', 'kept:', 'vouchedTo:'].every((f) => nostrNext.includes(f)) &&
+    /m\.type === 'nostr'\) \{ node\.nostr = m; \}/.test(tabnode),
+);
+t(
+  'the loader keeps what the page reads of a synced message (synced, height, hash, time, lastSync)',
+  /m\.type === 'synced'\).*node\.synced = true;.*node\.height = m\.height; node\.hash = m\.hash; node\.time = m\.time; node\.lastSync = Date\.now\(\)/.test(
+    tabnode,
+  ),
+);
+t(
+  'a block request is answered by height, with the request’s req echoed (the page’s generation)',
+  /Number\(m\.height\)/.test(worker) && blockPost.includes('req: m.req ?? null'),
 );
 t('checks are { ok, failed }', /return \{ ok: rest\.length === 0, failed: rest/.test(template));
 t(
@@ -123,6 +154,34 @@ t(
 );
 // the log lines, built the way the node builds them, still read
 const refuse = mempool.match(/this\.log\(`(mempool: refused [^`]+)`\)/)?.[1] ?? '';
+// the sources the node passes, by its own expressions: a relay event's (subscribeMempool) and the mirror's seed (the worker)
+const relayFrom = mempool.match(/mempool\.add\([^,]+, (`[^`]+`), viaOf/)?.[1] ?? '';
+const seedFrom = worker.match(/rawAdd\(t\.hex, '([^']+)', 'seed'\)/)?.[1] ?? '';
+let fromRelay = null;
+try {
+  fromRelay = new Function('ev', 'url', 'return ' + relayFrom + ';')({ pubkey: 'f'.repeat(64) }, 'wss://relay.damus.io');
+} catch {}
+t(
+  'the node’s own sources (a publisher via a relay, the mirror) are found at the pin',
+  !!fromRelay && / via relay\.damus\.io$/.test(fromRelay) && seedFrom === 'the mirror',
+  `${relayFrom} → ${fromRelay}; ${seedFrom}`,
+);
+for (const [what, from] of [
+  ['a relay event', fromRelay],
+  ['the mirror’s seed', seedFrom],
+  ['no source', ''],
+]) {
+  let line = null;
+  try {
+    line = new Function('r', 'from', 'return `' + refuse + '`;')({ txid: 'cd'.repeat(32), error: 'input 0: script failed: x' }, from);
+  } catch {}
+  const r = line && NT.parseRefusal(line);
+  t(
+    `a refusal from ${what}, built by the node’s template, reads back whole`,
+    !!r && r.from === (from || null) && r.reason === 'input 0: script failed: x' && r.txid === 'cd'.repeat(6),
+    line + ' → ' + JSON.stringify(r),
+  );
+}
 // the node's own template, evaluated: a txid, a wss:// source and a reason with ": " in it come back as they went in
 let built = null;
 try {
@@ -162,5 +221,22 @@ const kept = worker.match(/new Error\(`\$\{stopErr\.message\}([^`]+)`\)/)?.[1] ?
 t(
   'a stopped fetch says what arrived is kept, and the page words it as a source that did not answer',
   /what arrived is kept/.test(kept) && /^The node’s source could not be reached/.test(ST.plainError('no answer in 30 s' + kept)),
+);
+// the snapshot the page names and the one the pinned node expects
+const base = Number(params.match(/baseHeight: (\d+)/)?.[1]);
+const bytes = Number(params.match(/bytes: (\d+)/)?.[1]);
+const file = params.match(/file: '([^']+)'/)?.[1];
+const welcome = html.match(/<p id="wl-d"[^>]*>([\s\S]*?)<\/p>/)?.[1] ?? '';
+t(
+  'the welcome’s figures before the page fills them are the pinned snapshot’s: its height and its size',
+  !!base &&
+    welcome.includes(`<span id="wl-base">${base.toLocaleString('en-US')}</span>`) &&
+    welcome.includes(`<b id="wl-size">${Math.round(bytes / 2 ** 20)} MB</b>`),
+  `${base} ${bytes} · ${welcome.slice(0, 160)}`,
+);
+t(
+  'the built-in default snapshot is the pinned node’s file on the mirror',
+  SO.DEFAULT_SNAP === SO.MIRROR + file && SO.defaultsFor({ SNAPSHOT: { file } }).snapshot === SO.DEFAULT_SNAP,
+  `${SO.DEFAULT_SNAP} vs ${file}`,
 );
 done();
