@@ -11,6 +11,7 @@ import * as P from '../lib/pack.mjs';
 import * as ST from '../lib/status.mjs';
 import * as SO from '../lib/sources.mjs';
 import * as FM from '../lib/fmt.mjs';
+import * as CH from '../lib/chain.mjs';
 const rd = (f) => readFileSync(new URL('../' + f, import.meta.url), 'utf8');
 const src = rd('bight.js'),
   html = rd('index.html');
@@ -74,6 +75,41 @@ t(
   (tabnode.match(/https:\/\/cdn\.jsdelivr\.net\/npm\/webtorrent@[^'"]+/) ?? [''])[0] !== '' &&
     csp.includes(tabnode.match(/https:\/\/cdn\.jsdelivr\.net\/npm\/webtorrent@[^'"]+/)?.[0]),
 );
+// ---- the engine at the pin the policy names (bitcoin-desktop/schema): the header's time, and the subsidy the page's
+// fees are computed with (chain.mjs: 50 BTC halving every 210,000 blocks, as testnet4's params)
+const schemaPin = csp.match(/bitcoin-desktop\/schema@([0-9a-f]{40})/)?.[1];
+const SCHEMA = (process.env.SCHEMA ?? homedir() + '/bitcoin-desktop/schema').replace(/^~/, homedir());
+let blocksJs = '',
+  chainLd = '',
+  coreLd = '';
+try {
+  const sh = (path) =>
+    execSync(`git -C ${SCHEMA} show ${schemaPin}:${path}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 1 << 26 });
+  blocksJs = sh('codec/blocks.js');
+  chainLd = sh('schema/chain.jsonld');
+  coreLd = sh('schema/core.jsonld');
+} catch {}
+t('the engine at the policy’s pin is readable (SCHEMA)', !!schemaPin && !!blocksJs, `${SCHEMA} @ ${schemaPin}`);
+const testnet4 = (() => {
+  try {
+    const g = JSON.parse(chainLd)['@graph'] ?? [];
+    return g.find((x) => x.name === 'testnet4') ?? null;
+  } catch {
+    return null;
+  }
+})();
+t(
+  'the subsidy the page’s fees use is the engine’s: its rule, and testnet4’s halving interval and initial subsidy',
+  /return halvings >= 64 \? 0 : Math\.floor\(this\.params\.initialSubsidy \/ 2 \*\* halvings\);/.test(blocksJs) &&
+    /const halvings = Math\.floor\(height \/ this\.params\.halvingInterval\);/.test(blocksJs) &&
+    testnet4?.halvingInterval === CH.HALVING &&
+    testnet4?.initialSubsidy === CH.INITIAL_SUBSIDY,
+  JSON.stringify({ halvingInterval: testnet4?.halvingInterval, initialSubsidy: testnet4?.initialSubsidy }),
+);
+t(
+  'the engine’s block header has a time field (header.time, which the page reads)',
+  /"label": "time"/.test(coreLd) && /BlockHeader/.test(coreLd),
+);
 // ---- the contract: what the page reads from the node
 const mpPost = worker.match(/post\(\{ type: 'mempool',[^\n]*/)?.[0] ?? '';
 t(
@@ -107,7 +143,9 @@ t(
     ),
 );
 t('the signed tip says when this tab kept it (kept)', /kept: t\.relay === 'this tab \(kept\)'/.test(worker));
-const blockPost = worker.match(/post\(\{ type: 'block',[^\n]*/)?.[0] ?? '';
+// every block reply the worker posts (a later release could add a second): each is read the same way
+const blockPosts = [...worker.matchAll(/post\(\{ type: 'block',[^\n]*/g)].map((m) => m[0]);
+const blockPost = blockPosts[0] ?? '';
 t(
   'a block reply carries hash, size, header, nTx, txids and the previous hash',
   ['hash:', 'size:', 'header:', 'nTx:', 'txids', 'previousblockhash'].every((f) => blockPost.includes(f)),
@@ -144,11 +182,25 @@ t(
 // every field the page reads of a block reply (blockOf in bight.js, and req) is one the node's reply has
 const blockOfSrc = src.match(/const blockOf = \(m\) => \(\{([\s\S]*?)\n\}\);/)?.[1] ?? '';
 const reads = [...new Set([...blockOfSrc.matchAll(/\bm\.([a-zA-Z]+)/g)].map((x) => x[1]))];
-const sent = new Set([...blockPost.matchAll(/[{,]\s*([a-zA-Z]+)(?=[,:} ])/g)].map((x) => x[1]));
+const sentBy = (post) => new Set([...post.matchAll(/[{,]\s*([a-zA-Z]+)(?=[,:} ])/g)].map((x) => x[1]));
 t(
-  'every field the page reads of a block reply (blockOf) is one the node at the pin sends, the coinbase’s value among them',
-  reads.length >= 8 && reads.includes('coinbaseValue') && reads.every((f) => sent.has(f)),
-  `reads ${reads.join(',')}; missing ${reads.filter((f) => !sent.has(f)).join(',')}`,
+  'every field the page reads of a block reply (blockOf) is one every block reply of the node at the pin sends, the coinbase’s value among them',
+  blockPosts.length >= 1 &&
+    reads.length >= 8 &&
+    reads.includes('coinbaseValue') &&
+    blockPosts.every((post) => reads.every((f) => sentBy(post).has(f))),
+  `${blockPosts.length} replies; reads ${reads.join(',')}; missing ${reads.filter((f) => !sentBy(blockPost).has(f)).join(',')}`,
+);
+t(
+  'the header the page reads its time from is the block’s own header (header.time, the codec’s BlockHeader)',
+  /header: block\.header/.test(blockPost) && /time: m\.header\?\.time/.test(blockOfSrc),
+);
+// a wipe that leaves no node running: the loader says so the way the page reads it (phase 'error', a fatal error message,
+// on 'error' and on 'message')
+t(
+  'a wipe that leaves no node running: phase error, synced false, a fatal error message emitted on error and on message',
+  /node\.phase = 'error'; node\.synced = false; node\.error = text;/.test(tabnode) &&
+    /const m = \{ type: 'error', text, fatal: true \}; emit\('error', m\); emit\('message', m\);/.test(tabnode),
 );
 t(
   'a block request is answered by height, with the request’s req echoed (the page’s generation)',

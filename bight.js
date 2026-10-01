@@ -5,7 +5,7 @@
 // The decisions (packing, bands, what was seen first, the chain cache, search, the status words, the sources, the
 // settings, the markup of tiles and details) are lib/*.mjs, tested; this file wires them to the document, patching in
 // place so a focused or selected element survives the next update.
-export const VERSION = '2026-10-01.7';
+export const VERSION = '2026-10-01.8';
 const $ = (id) => document.getElementById(id);
 const NODE = 'https://cdn.jsdelivr.net/gh/bitcoin-blake/blaketestnode@3037bb4c7ea414e75332632677ac2ffee191b704';
 const RELAYS = [
@@ -133,10 +133,14 @@ const say = (text) => {
   };
   next();
 };
+// a stopped node is said once: the fatal notice replaces the node's own error notice (the same words), which pill() then
+// leaves out for as long as the fatal one is there
 const fatal = (text) => {
   $('syncmsg').textContent = text;
+  unbanner('nodeerr');
   banner('fatal', 'bad', text, [['Reload', () => location.reload()]]);
 };
+const fatalShown = () => !!document.querySelector('#banners [data-b="fatal"]');
 // in a frame whose page is on another site, nothing that downloads, trusts a source or overrides the lock is done on a click
 // (the page around it could have placed that click); it says to open Bight in its own tab instead
 const foreignFrame = (() => {
@@ -245,6 +249,7 @@ const state = {
   blocks: new Map(), // height → { height, hash, prev, time, nTx, size, txids, fees }: the last ones, for the tiles
   found: new Map(), // height → block: older blocks asked by a search, kept apart from the tiles (the last few)
   wanted: new Map(), // height → when asked
+  searchId: 0, // each search's own req (chain.reqOf), so the node's answer, or its error, is matched to that search alone
   arrived: new Map(), // height → { at (ms), alone }: when this page learned of it (chain.markArrived)
   gen: 0, // the generation of the block requests: a reorganisation starts a new one, and older replies are ignored
   seenTx: new Map(),
@@ -268,6 +273,8 @@ const state = {
   templateWanted: false, // a template asked while the tab was hidden: asked when it is shown
   lastSampleAt: 0,
   announcedSync: false,
+  afterGap: false, // a gap in listening was seen (the timer late, online again, a frozen tab resumed): the next sync is a catch-up
+  notStarted: false, // "Not now" on the welcome: nothing runs until Start
   following: false,
   running: false,
   idle: false,
@@ -303,7 +310,7 @@ tn.on('sync', ({ msg, pct, eta }) => {
   pill();
 });
 function pill() {
-  const p = ST.pillState(node, { wiped: state.wiped });
+  const p = ST.pillState(node, { wiped: state.wiped, notStarted: state.notStarted });
   $('pilldot').className = p.level;
   $('pilltxt').textContent = p.text;
   $('nodeinfo').textContent = node.st
@@ -312,7 +319,7 @@ function pill() {
   // what the node says about the chain and its sources, as notices
   if (node.unresponsive) banner('slow', 'warn', ST.plainError('not answered for two minutes'), [['Reload', () => location.reload()]]);
   else unbanner('slow');
-  if (node.error && !state.idle && !node.unresponsive)
+  if (node.error && !state.idle && !node.unresponsive && !fatalShown())
     banner('nodeerr', 'bad', ST.plainError(node.error), [['Reload', () => location.reload()]]);
   else unbanner('nodeerr');
   const c = node.synced ? ST.chainState(node) : null;
@@ -349,15 +356,16 @@ tn.on('nostr', () => {
 });
 tn.on('message', (m) => {
   unbanner('slowstart');
-  if (m.type === 'responsive' || m.type === 'unresponsive' || m.type === 'error') pill();
-  if (m.type === 'mempool-tx') onMempoolTx(m);
   // a wipe that left no node running (the loader says so as a fatal error): nothing more is asked of it
   if (m.type === 'error' && m.fatal) {
     state.running = false;
     fatal(ST.plainError(m.text));
   }
-  // the node answers a block it does not have with an error that carries no req: while a search waits, it is that answer
-  if (m.type === 'error' && /Block not found/.test(m.text ?? '') && state.pendingSearch) {
+  if (m.type === 'responsive' || m.type === 'unresponsive' || m.type === 'error') pill();
+  if (m.type === 'mempool-tx') onMempoolTx(m);
+  // a request the node cannot answer (a block it does not have) is answered with an error that echoes its req: the search's
+  // answer only when it is the search still waiting (a tile's request refused by a rollback, or an earlier search's, is not)
+  if (m.type === 'error' && m.req != null && state.pendingSearch && m.req === state.pendingSearch.req) {
     const h = state.pendingSearch.height;
     dropPending();
     openDetail(
@@ -370,8 +378,12 @@ tn.on('message', (m) => {
 
 // ---- the chain tip and the last blocks: asked from the worker by height, cached, dropped when a reorganisation replaced them
 tn.on('synced', (m) => {
-  // a gap in listening first: a block the node applied while the computer slept was not watched arriving
+  // a gap in listening first: a block the node applied while the computer slept was not watched arriving. Nor was one
+  // applied by the first sync (it replays from where the files left off), nor by the first sync after any gap the timer,
+  // the browser's online event or a resumed tab saw first (the wake sync must fetch before it answers)
   const gap = checkGap();
+  const watched = !gap && !state.afterGap && state.announcedSync;
+  state.afterGap = false;
   if (!state.following && !state.wiped) {
     state.following = true;
     tn.followMempool({ relays: RELAYS });
@@ -386,13 +398,20 @@ tn.on('synced', (m) => {
   if (dropped.length || replaced.length) {
     state.gen++;
     for (const h of [...dropped, ...replaced]) state.wanted.delete(h);
-    for (const h of [...state.found.keys()]) if (h > m.height || dropped.includes(h)) state.found.delete(h);
   }
-  CH.markArrived(state.arrived, m, Date.now(), { watched: !gap }); // every height this pass applied reached this tab now
+  // a block a search fetched at a height this pass applied (or above the tip) is of the branch it replaced, whatever the
+  // generation: it is fetched again if searched again
+  for (const h of [...state.found.keys()]) if (gone(h)) state.found.delete(h);
+  CH.markArrived(state.arrived, m, Date.now(), { watched }); // every height this pass applied reached this tab now
   // an open block that a reorganisation replaced is not left on screen as validated: it says so, and the new block is
   // shown when the node answers (the tile's reply, or a search asked again under the new generation)
   const open = !$('detail').hidden;
-  if (open && state.selected != null && dropped.includes(state.selected)) replacedDetail(state.selected);
+  if (open && state.selected != null && dropped.includes(state.selected)) {
+    const h = state.selected;
+    replacedDetail(h);
+    // the tiles ask for the last 8 heights only: an older block shown is asked for as a search would ask it
+    if (h <= m.height && h <= m.height - 8) askSearch(h, { keepOpen: true });
+  }
   if (open && state.openFound != null && gone(state.openFound)) {
     const h = state.openFound;
     state.found.delete(h);
@@ -411,14 +430,21 @@ tn.on('synced', (m) => {
   askTemplate();
 });
 function wantBlocks() {
-  if (state.wiped || !state.running) return;
+  // nothing is asked before the first sync is done: the node's one queue is busy with it, and the heights are not final
+  if (state.wiped || !state.running || !node.synced) return;
   // what was asked of heights no longer shown, and when blocks below the tiles arrived (the lowest tile keeps its
   // predecessor's, for seen-first), are forgotten
   if (node.height != null) CH.pruneBelow(state.wanted, node.height - 8);
   if (state.blocks.size) CH.pruneBelow(state.arrived, Math.min(...state.blocks.keys()) - 1);
   for (const h of CH.wantHeights({ height: node.height, blocks: state.blocks, wanted: state.wanted, now: Date.now(), floor: SNAP_BASE }))
-    tn.post({ type: 'block', height: h, req: CH.reqOf(state.gen) });
+    askBlock(h, CH.reqOf(state.gen));
   scheduleRender();
+}
+// a block asked of the node; nothing is asked of a node that is stopped or wiped
+function askBlock(height, req) {
+  if (!state.running || state.wiped) return false;
+  tn.post({ type: 'block', height, req });
+  return true;
 }
 const blockOf = (m) => ({
   height: m.height,
@@ -621,7 +647,7 @@ function renderMined() {
         key: 'empty',
         cls: 'blk empty',
         tag: 'div',
-        html: '<span class="h">last blocks</span><span class="s">appear once the tab is up to date</span>',
+        html: `<span class="h">last blocks</span><span class="s">${node.synced ? 'asking the node for the last blocks…' : 'appear once the tab is up to date'}</span>`,
       },
     ]);
     return;
@@ -679,7 +705,7 @@ function openDetail(html, opener, { focus = true, keepPending = false } = {}) {
   const m = /^(<h2 id="dtitle">[\s\S]*?<\/h2>)/.exec(html);
   d.innerHTML = m ? `<div class="dhead">${m[1]}${close}</div>${html.slice(m[1].length)}` : `<div class="dhead">${close}</div>${html}`;
   state.opener = opener;
-  $('dclose').onclick = closeDetail;
+  $('dclose').onclick = () => closeDetail();
   if (focus || inside) d.focus();
   if (!focus) {
     const h = d.querySelector('#dtitle');
@@ -689,10 +715,13 @@ function openDetail(html, opener, { focus = true, keepPending = false } = {}) {
 }
 // Escape closes the detail from anywhere on the page (a tile, a row, the detail itself), unless a dialog is open: the
 // dialog's own Escape is meant then
+// The focus goes back to what opened it only when it was in the detail, on that opener, or nowhere; from anywhere else
+// (a row, the search) it stays where it is
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || e.defaultPrevented || $('detail').hidden || document.querySelector('dialog[open]')) return;
   e.preventDefault();
-  closeDetail();
+  const a = document.activeElement;
+  closeDetail({ restore: !a || a === document.body || $('detail').contains(a) || a === openerEl(state.opener) });
 });
 // a transaction or a block asked of the node for the detail is forgotten when the detail closes or shows something else
 function dropPending() {
@@ -701,7 +730,16 @@ function dropPending() {
     state[k] = null;
   }
 }
-function closeDetail() {
+// what opened the detail, in the document: a search (the box), a row's txid button, a tile
+const openerEl = (o) =>
+  o?.kind === 'q'
+    ? $('q')
+    : o?.kind === 'r'
+      ? document.querySelector(`#rows tr[data-t="${o.key}"] .txbtn`)
+      : o
+        ? document.querySelector(`[data-k="${o.kind}${o.key}"]`)
+        : null;
+function closeDetail({ restore = true } = {}) {
   dropPending();
   $('detail').hidden = true;
   $('detail').dataset.said = '';
@@ -711,15 +749,7 @@ function closeDetail() {
   state.selectedProj = null;
   renderMined();
   renderProjected(state.lastBlocks ?? []);
-  const back =
-    o?.kind === 'q'
-      ? $('q')
-      : o?.kind === 'r'
-        ? document.querySelector(`#rows tr[data-t="${o.key}"] .txbtn`)
-        : o
-          ? document.querySelector(`[data-k="${o.kind}${o.key}"]`)
-          : null;
-  (back ?? $('q')).focus();
+  if (restore) (openerEl(o) ?? $('q')).focus();
 }
 function showBlock(h, { focus = true, foundTxid = null, opener = null } = {}) {
   const b = blockAt(h);
@@ -919,7 +949,10 @@ function sample() {
   SR.pushSample(state.samples, { t: Date.now(), count: node.mempool.count, vb: node.mempool.bytes });
   if (!document.hidden) drawGraph();
 }
+// a gap: listening begins again now, and the next sync is a catch-up (whoever saw the gap first: this timer, a message,
+// the browser's online event or a frozen tab resumed), so no block it applies counts as watched arriving
 const listeningGap = () => {
+  state.afterGap = true;
   if (state.followedAt != null) state.followedAt = Date.now();
 };
 // a gap in listening: neither this timer nor a message from the node for over two minutes (the computer slept, or the
@@ -1021,7 +1054,9 @@ function drawGraph() {
 $('search').onsubmit = (e) => {
   e.preventDefault();
   const pq = SC.parseQuery($('q').value);
+  // what the detail showed is no longer open (a found block left as open would be taken for the one shown)
   state.selected = null;
+  state.openFound = null;
   if (state.idle)
     return openDetail(
       `<h2 id="dtitle">Search</h2><p class="mut">This tab is idle: the node and its mempool are in the other tab. Search there.</p>`,
@@ -1054,6 +1089,15 @@ $('search').onsubmit = (e) => {
 // says why it is asking (a reorganisation replaced the block shown)
 function askSearch(h, { keepOpen = false } = {}) {
   clearTimeout(state.pendingSearch?.timer);
+  // a stopped node is asked nothing: said in place of the search
+  if (!state.running || state.wiped) {
+    state.pendingSearch = null;
+    if (!keepOpen)
+      openDetail(`<h2 id="dtitle">Block ${esc(n(h))}</h2><p class="mut">the node is stopped, so it cannot be asked: reload</p>`, {
+        kind: 'q',
+      });
+    return;
+  }
   if (!keepOpen)
     openDetail(`<h2 id="dtitle">Block ${esc(n(h))}</h2><p class="mut">asking the node for block ${esc(n(h))}…</p>`, { kind: 'q' });
   const timer = setTimeout(() => {
@@ -1065,8 +1109,9 @@ function askSearch(h, { keepOpen = false } = {}) {
       { focus: false },
     );
   }, 15e3);
-  state.pendingSearch = { height: h, gen: state.gen, timer };
-  tn.post({ type: 'block', height: h, req: CH.reqOf(state.gen, true) });
+  const req = CH.reqOf(state.gen, true, ++state.searchId);
+  state.pendingSearch = { height: h, gen: state.gen, timer, req };
+  askBlock(h, req);
 }
 // the block open in the detail was replaced by a reorganisation (or rolled back): said in place of it, without moving the
 // focus, until the node answers with the block now at that height
@@ -1083,7 +1128,7 @@ function onSearchBlock(m, r) {
   if (r.gen !== state.gen || !m.hash) return;
   state.found.set(m.height, blockOf(m));
   while (state.found.size > 10) state.found.delete(state.found.keys().next().value);
-  if (state.pendingSearch?.height !== m.height) return;
+  if (state.pendingSearch?.req !== m.req) return;
   dropPending();
   showBlock(m.height, { opener: { kind: 'q' }, focus: false });
 }
@@ -1293,16 +1338,13 @@ function missingFeatures() {
   if (!window.isSecureContext) miss.push('a secure (https) page');
   return miss;
 }
+// idle: said once, by the card that takes the page's place (with "Check again"); the pill and the status bar say only "idle"
 function goIdle() {
   state.idle = true;
   document.body.classList.add('idle');
-  $('syncmsg').textContent = 'idle: the node runs in another tab of this browser';
-  banner(
-    'idle',
-    'info',
-    'Another tab of this browser runs the node (Reef, Bight, Winch or Hitch). Bight shows the mempool only where the node runs; this tab starts it as soon as that tab closes.',
-    [['Check again', () => location.reload()]],
-  );
+  $('syncmsg').textContent = 'idle';
+  $('idle-check').onclick = () => location.reload();
+  say('This tab is idle: another tab of this browser runs the node.');
   pill();
   // the lock is held by the other tab: when it is granted here, the other tab has closed, so this one takes over
   navigator.locks
@@ -1333,6 +1375,8 @@ async function startNode(force = false) {
   unbanner('welcome');
   // asked first, always: no node starts (and nothing is downloaded) without the person's go
   if (!(LS.get('reef:started') || LS.get('bight:started'))) return welcome(force);
+  state.notStarted = false;
+  pill();
   if (!navigator.locks && !force) {
     node.lockError = 'this browser has no Web Locks';
     return lockFailed(node.lockError);
@@ -1385,6 +1429,8 @@ async function welcome(force = false) {
   };
   $('wl-later').onclick = () => {
     $('welcome').close();
+    state.notStarted = true;
+    pill();
     $('syncmsg').textContent = 'not started: nothing is downloaded until you choose Start';
     banner('welcome', 'info', 'The node is not started. Nothing is downloaded until you start it.', [
       ['Start the node…', () => $('welcome').showModal()],

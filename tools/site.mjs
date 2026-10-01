@@ -2,7 +2,7 @@
 // into a directory; then every local file the page refers to (in index.html: scripts and links; in every .js/.mjs that is
 // served: relative imports, the page's module list, fetched files) must be there, so a missing file fails the run instead
 // of breaking the published page. Usage: node tools/site.mjs <dir>
-import { cpSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { join, dirname, normalize } from 'node:path';
 const out = process.argv[2] ?? '_site';
@@ -27,5 +27,11 @@ const missing = [...refs].filter((r) => !existsSync(join(out, r)));
 if (missing.length) {
   console.log(`the site refers to files it does not have: ${missing.join(', ')}`);
   process.exit(1);
+}
+// the deployed version.json also names the commit it was built from (GITHUB_SHA in CI), so a version on the site is traced
+// to its commit without searching the log; the page reads only .version
+if (process.env.GITHUB_SHA) {
+  const v = JSON.parse(readFileSync('version.json', 'utf8'));
+  writeFileSync(join(out, 'version.json'), JSON.stringify({ ...v, commit: process.env.GITHUB_SHA }) + '\n');
 }
 console.log(`site: ${files.length} files, ${refs.size} local references, all present`);

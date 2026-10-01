@@ -600,8 +600,8 @@ t(
     'requests carry their generation; a search is told apart; anything else is not the page’s',
     CH.parseReq(CH.reqOf(3)).gen === 3 &&
       !CH.parseReq(CH.reqOf(3)).search &&
-      CH.parseReq(CH.reqOf(4, true)).search &&
-      CH.parseReq(CH.reqOf(4, true)).gen === 4 &&
+      CH.parseReq(CH.reqOf(4, true, 1)).search &&
+      CH.parseReq(CH.reqOf(4, true, 1)).gen === 4 &&
       CH.parseReq('bight') === null &&
       CH.parseReq('reef:1') === null &&
       CH.parseReq(null) === null,
@@ -1147,9 +1147,11 @@ t(
     JSON.stringify(pl3.runs),
   );
   t(
-    'the span under a minute and at one minute reads "the last minute"',
-    SR.spanWords([{ t: 0 }, { t: 20000 }]) === 'the last minute' &&
+    'the span under a minute in seconds, at one minute "the last minute"',
+    SR.spanWords([{ t: 0 }, { t: 20000 }]) === 'the last 20 s' &&
+      SR.spanWords([{ t: 0 }, { t: 59400 }]) === 'the last 59 s' &&
       SR.spanWords([{ t: 0 }, { t: 60000 }]) === 'the last minute' &&
+      SR.spanWords([{ t: 0 }, { t: 89000 }]) === 'the last minute' &&
       SR.spanWords([{ t: 0 }, { t: 120000 }]) === 'the last 2 minutes',
   );
   // seen first: strictly after
@@ -1211,6 +1213,98 @@ t(
   t(
     'a mempool transaction: heard at its time in seconds, its ETA at the chain’s spacing',
     heard.includes(new Date(100 * 1000).toLocaleTimeString()) && /in projected block 4, in ~40 min/.test(heard),
+  );
+}
+// ---- round 5
+{
+  // the pill after "Not now"
+  t(
+    'after "Not now" the pill says not started, grey, not a pulsing "starting"',
+    ST.pillState({ phase: 'starting' }, { notStarted: true }).text === 'not started' &&
+      ST.pillState({ phase: 'starting' }, { notStarted: true }).level === 'idle' &&
+      ST.pillState({ phase: 'starting' }).text === 'starting' &&
+      ST.pillState({ phase: 'starting' }, { notStarted: true, wiped: true }).text === 'wiped · reload',
+  );
+  // many matches, by kind
+  const hb = (c, h) => ({ height: h, hash: id(c), txids: [] });
+  const many = (o) => SC.locate({ prefix: o.p }, o);
+  const onlyBlocks = many({ p: '0', blocks: [hb('0', 1), { height: 2, hash: '0' + id('1').slice(1), txids: [] }] });
+  const onlyTxs = many({ p: '0', list: [tx('0', 1, 1), { ...tx('1', 1, 1), txid: '0' + id('1').slice(1) }] });
+  const mixed = many({ p: '0', list: [tx('0', 1, 1)], blocks: [hb('0', 1)] });
+  t(
+    'many matches are counted by kind',
+    onlyBlocks.where === 'many' &&
+      onlyBlocks.blocks === 2 &&
+      onlyBlocks.txs === 0 &&
+      onlyTxs.txs === 2 &&
+      onlyTxs.blocks === 0 &&
+      mixed.txs === 1 &&
+      mixed.blocks === 1 &&
+      mixed.count === 2,
+    JSON.stringify([onlyBlocks, onlyTxs, mixed]),
+  );
+  t(
+    'many matches are said by kind: only blocks, only transactions, both',
+    V.notFoundWords(onlyBlocks) === '2 blocks start with that: type more of the id' &&
+      V.notFoundWords(onlyTxs) === '2 transactions start with that: type more of the id' &&
+      V.notFoundWords({ where: 'many', count: 3, txs: 2, blocks: 1 }) === '2 transactions and 1 block start with that: type more of the id',
+    V.notFoundWords(onlyBlocks),
+  );
+  // the fees note under a block whose coinbase claim is known
+  const det = (fees) =>
+    V.blockDetail(
+      { height: 3, hash: id('h'), time: 100, nTx: 2, size: 9, txids: [id('c'), id('b')], fees },
+      { sw: { counted: true, seen: 0, others: 1, knownCount: 0, knownFees: 0 }, seenTx: new Map(), signedWords: 's' },
+    );
+  t(
+    'with the coinbase’s fees known, the note says per-transaction fees are partial (it does not contradict the row)',
+    /Per-transaction fees are shown only for the transactions/.test(det(450)) &&
+      /<p class="note">Fees are shown for the transactions/.test(det(null)),
+  );
+  // each search its own req: the node's answer, or its error, matches one search only
+  t(
+    'a search’s req carries the generation and its own id; a tile’s only the generation',
+    CH.reqOf(3, true, 7) === 'bight:s3.7' &&
+      CH.parseReq('bight:s3.7').search === true &&
+      CH.parseReq('bight:s3.7').gen === 3 &&
+      CH.parseReq('bight:s3.7').id === 7 &&
+      CH.reqOf(3, true, 7) !== CH.reqOf(3, true, 8) &&
+      CH.parseReq('bight:s3') === null &&
+      CH.parseReq('bight:3.1') === null &&
+      CH.parseReq('xbight:3') === null &&
+      CH.parseReq('bight:3x') === null,
+  );
+  // ETA spacing: the median of an even number of gaps, from unsorted blocks
+  const hb2 = (h, time) => ({ height: h, time });
+  t(
+    'the spacing is the median of the gaps (the mean of the two middle ones when even), whatever order the blocks come in',
+    FM.spacingMin([hb2(4, 3900), hb2(1, 0), hb2(3, 2700), hb2(5, 4500), hb2(2, 2400)]) === 15 &&
+      FM.spacingMin([hb2(3, 1200), hb2(1, 0), hb2(2, 600), hb2(4, 3000)]) === 10,
+    String(FM.spacingMin([hb2(4, 3900), hb2(1, 0), hb2(3, 2700), hb2(5, 4500), hb2(2, 2400)])),
+  );
+  // sizes at their exact boundaries
+  t(
+    'sizes at the boundaries: 1 GB, 1 MB, under it, nothing',
+    FM.fmtGB(1e9) === '1.0 GB' &&
+      FM.fmtGB(1e9 - 1) === '1000 MB' &&
+      FM.fmtGB(1e6) === '1 MB' &&
+      FM.fmtGB(1e6 - 1) === '< 1 MB' &&
+      FM.fmtGB(1) === '< 1 MB' &&
+      FM.fmtGB(0) === '0 MB',
+  );
+  // heights: the digit groups
+  t(
+    'grouped heights: groups of three after the first, one separator throughout, no leading zero',
+    SC.parseQuery('1,000').height === 1000 &&
+      SC.parseQuery('1,000,000').height === 1000000 &&
+      SC.parseQuery('152,10,5').height === undefined &&
+      SC.parseQuery('152,1050').height === undefined &&
+      SC.parseQuery('1234,567').height === undefined &&
+      SC.parseQuery('152,105 000').height === undefined &&
+      SC.parseQuery('0,100').height === undefined &&
+      SC.parseQuery('9999999').height === 9999999 &&
+      SC.parseQuery('0').height === 0 &&
+      SC.parseQuery('01').height === undefined,
   );
 }
 done();

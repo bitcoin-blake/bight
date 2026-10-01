@@ -108,7 +108,7 @@ const mtx = (c, i, rate = 2, vsize = 150) => ({
   outputs: [{ value: 1000, scriptPubKey: '0014' + '11'.repeat(20) }],
   fed: true,
 });
-// the node's mempool state at 5550637: every transaction compactly in all, the first 1,000 whole in txs
+// the node's mempool state at b54e498: every transaction compactly in all, the first 1,000 whole in txs
 const mp = (txs, o = {}) => ({
   type: 'mempool',
   height: 152100,
@@ -415,7 +415,7 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
   await a.fill('#q', '151000');
   await a.press('#q', 'Enter');
   const askedOld = await until(a, () =>
-    window.__fake.posts.some((m) => m.type === 'block' && m.height === 151000 && /^bight:s\d+$/.test(m.req)),
+    window.__fake.posts.some((m) => m.type === 'block' && m.height === 151000 && /^bight:s\d+\.\d+$/.test(m.req)),
   );
   await reply(a, {
     height: 151000,
@@ -500,9 +500,12 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
   // a second tab while this one holds the lock
   const b = await p.open();
   t(
-    'a second tab is idle and says so',
+    'a second tab is idle and says so once: the card with "Check again", no notice repeating it, the status bar only "idle"',
     (await until(b, () => /idle/.test(document.getElementById('pilltxt').textContent), null, 8000)) &&
-      !!(await b.$('#banners [data-b=idle]')),
+      (await b.isVisible('#idle-check')) &&
+      !(await b.$('#banners [data-b=idle]')) &&
+      (await text(b, '#syncmsg')) === 'idle',
+    (await text(b, '#banners')) + ' | ' + (await text(b, '#syncmsg')),
   );
   await b.close();
   // the theme
@@ -944,6 +947,13 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
       (await a.getAttribute('#pilldot', 'class')) === 'bad',
     (await text(a, '#pilltxt')) + ' | ' + (await text(a, '#banners')),
   );
+  await a.evaluate(() => document.getElementById('dlg').close());
+  await a.waitForTimeout(5600); // a render and a tick: pill() must not add the node's own error beside the fatal notice
+  t(
+    'the stop is said in one notice, not two with the same words',
+    (await a.evaluate(() => document.querySelectorAll('#banners .banner.bad').length)) === 1,
+    await text(a, '#banners'),
+  );
   t('no page errors after a failed wipe', !p.errors.length, p.errors.join(' | '));
   await p.ctx.close();
 }
@@ -976,6 +986,360 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
   t(
     'Run anyway with no answer to the download asks first, and starts nothing',
     (await until(a, () => !!document.querySelector('#welcome[open]'))) && (await a.evaluate(() => window.__fake.forced)) === 0,
+  );
+  await p.ctx.close();
+}
+// 15: what counts as watched arriving, on a controlled clock: never a block the first sync applied (it replays the files),
+// never the first sync after a gap the timer, the browser's online event or a resumed tab saw first; and the publisher's
+// heartbeat from a clock ahead of this one is taken as now, so its silence is still noticed
+{
+  const p = await profile({ 'reef:started': '1' });
+  const a = await p.open();
+  await until(a, () => window.__fake.starts === 1);
+  const T0 = Date.UTC(2026, 9, 1, 12);
+  const at = (ms) => a.clock.setFixedTime(T0 + ms);
+  const hx = (h) => h.toString(16).padStart(64, '0');
+  const blk = (h) => ({
+    height: h,
+    hash: hx(h),
+    previousblockhash: hx(h - 1),
+    size: 400,
+    nTx: 1,
+    header: { time: Math.floor(T0 / 1000) - 3600 },
+    txids: ['00'.repeat(32)],
+  });
+  const tile = (h) => text(a, `#mined [data-k=h${h}]`);
+  const sync1 = async (h) => {
+    await emit(a, 'synced', { height: h, hash: hx(h), applied: 1 });
+    await until(a, (h) => window.__fake.posts.some((m) => m.type === 'block' && m.height === h), h);
+    await reply(a, blk(h));
+    await until(a, (h) => !!document.querySelector(`#mined [data-k=h${h}]`), h);
+  };
+  await at(0);
+  await sync1(152200);
+  // an empty next block before the mempool is followed: not "built", whatever the node's build says
+  await emit(a, 'template', {
+    height: 152201,
+    hash: 'ab'.repeat(32),
+    prevHash: hx(152200),
+    txs: 0,
+    fees: 0,
+    weight: 4000,
+    rdts: true,
+    checks: { ok: true, failed: [] },
+  });
+  await a.waitForTimeout(300);
+  t('before the mempool is heard, an empty next block is not "built"', !/built/.test(await text(a, '#proj')), await text(a, '#proj'));
+  t(
+    'a block the first sync applied alone was replayed, not watched arriving: aged by its header',
+    /header/.test(await tile(152200)),
+    await tile(152200),
+  );
+  await at(1000);
+  await emit(a, 'mempool', mp([], { feedFileAt: T0 }));
+  await at(2000);
+  await sync1(152201);
+  t('a block applied alone while listening was watched arriving: aged from then', !/header/.test(await tile(152201)), await tile(152201));
+  // asleep: the page's timer sees the gap before the wake sync answers
+  await at(300000);
+  await a.waitForTimeout(5500);
+  await at(301000);
+  await sync1(152202);
+  t(
+    'after a gap the timer saw first, the wake sync’s block is a catch-up: aged by its header',
+    /header/.test(await tile(152202)),
+    await tile(152202),
+  );
+  await at(302000);
+  await sync1(152203);
+  t('…and the sync after it is watched again', !/header/.test(await tile(152203)), await tile(152203));
+  await a.evaluate(() => dispatchEvent(new Event('online')));
+  await at(303000);
+  await sync1(152204);
+  t('after the browser is online again, the next sync is a catch-up', /header/.test(await tile(152204)), await tile(152204));
+  await a.evaluate(() => document.dispatchEvent(new Event('resume')));
+  await at(304000);
+  await sync1(152205);
+  t('after a frozen tab resumes, the next sync is a catch-up', /header/.test(await tile(152205)), await tile(152205));
+  // a heartbeat from a clock half an hour ahead is taken as now: eleven minutes later its silence is said
+  await at(400000);
+  await emit(a, 'mempool', mp([], { feedFileAt: T0 + 400000 + 30 * 60e3 }));
+  await at(400000 + 11 * 60e3);
+  t(
+    'a publisher’s heartbeat from a clock ahead is taken as now, so eleven minutes of silence is still said',
+    await until(a, () => !!document.querySelector('#banners [data-b=feed]'), null, 12000),
+    await text(a, '#banners'),
+  );
+  t('no page errors on the controlled clock (round 5)', !p.errors.length, p.errors.join(' | '));
+  await p.ctx.close();
+}
+// 16: "Block not found" answers the oldest block request out (a tile's before the search's); a reorganisation asks a
+// waiting search again under the new generation; a hidden tab asks no template until shown; the caps (blocks kept,
+// refusals listed); a reply for another transaction than the one asked; the projected column; a stopped node asked nothing
+{
+  const p = await profile({ 'reef:started': '1' });
+  const a = await p.open();
+  await until(a, () => window.__fake.starts === 1);
+  const hx = (h, c = '0') => c + h.toString(16).padStart(63, '0');
+  const blk = (h, c = '0') => ({
+    height: h,
+    hash: hx(h, c),
+    previousblockhash: hx(h - 1, c),
+    size: 400,
+    nTx: 1,
+    header: { time: Math.floor(Date.now() / 1000) - 60 },
+    txids: ['00'.repeat(32)],
+  });
+  const H = 152300;
+  const many = Array.from({ length: 3000 }, (_, i) => mtx('6', i, 1 + (i % 40), 400));
+  await emit(a, 'mempool', mp(many));
+  await emit(a, 'synced', { height: H, hash: hx(H), applied: 1 });
+  await until(a, () => window.__fake.posts.filter((m) => m.type === 'block').length >= 8);
+  // on the real clock, with no gap: the block the first sync applied alone was replayed from the files, not watched arriving
+  await reply(a, blk(H));
+  t(
+    'on a steady clock too, the first sync’s block is aged by its header, not watched arriving',
+    await until(a, (h) => /header/.test(document.querySelector(`#mined [data-k=h${h}]`)?.textContent ?? ''), H),
+    await text(a, `#mined [data-k=h${H}]`),
+  );
+  // the projected column: in the next block, in a later projected one
+  await until(a, () => document.querySelectorAll('#rows tr').length > 100);
+  const col = await a.evaluate(() => [...document.querySelectorAll('#rows tr td:last-child')].map((td) => td.textContent));
+  t(
+    'the table says which projected block each transaction is in: next, #2…',
+    col.includes('next') && col.includes('#2'),
+    [...new Set(col)].join(','),
+  );
+  // a tile's request is out when the search asks: the node's "Block not found" for that tile is not the search's answer
+  await a.fill('#q', '152000');
+  await a.press('#q', 'Enter');
+  await until(a, () => window.__fake.posts.some((m) => m.type === 'block' && m.height === 152000));
+  // the node's error for a tile's request (its req echoed), and one with no req at all: neither is the search's answer
+  await emit(a, 'error', { text: 'Block not found', req: await reqFor(a, H - 1) });
+  await emit(a, 'error', { text: 'Block not found' });
+  await a.waitForTimeout(200);
+  t(
+    'a "Block not found" for a tile’s request, or for none, is not taken as the search’s answer',
+    /asking the node for block 152,000/.test(await text(a, '#detail')),
+    await text(a, '#detail'),
+  );
+  await emit(a, 'block', { ...blk(152000), req: await reqFor(a, 152000) });
+  t('…and the search’s own reply is shown', await until(a, (x) => document.getElementById('detail').textContent.includes(x), hx(152000)));
+  // the search's own error (its req echoed) is its answer, and a late one for an earlier search is not the next search's
+  for (let h = H; h > H - 8; h--) await reply(a, blk(h));
+  await until(a, () => !!document.querySelector(`#mined [data-k=h${152300 - 7}]`));
+  await a.fill('#q', '152001');
+  await a.press('#q', 'Enter');
+  await until(a, () => window.__fake.posts.some((m) => m.type === 'block' && m.height === 152001));
+  await emit(a, 'error', { text: 'Block not found @ handle < x', req: await reqFor(a, 152000) });
+  await a.waitForTimeout(200);
+  t(
+    'a late "Block not found" for an earlier search is not the waiting search’s answer',
+    /asking the node for block 152,001/.test(await text(a, '#detail')),
+    await text(a, '#detail'),
+  );
+  await emit(a, 'error', { text: 'Block not found @ handle < x', req: await reqFor(a, 152001) });
+  t(
+    'the search’s own "Block not found" (its req echoed) is its answer',
+    await until(a, () => /the node has no block 152,001/.test(document.getElementById('detail').textContent)),
+    await text(a, '#detail'),
+  );
+  // a block a search fetched is of the branch a reorganisation replaced when that pass applied its height: searched again,
+  // it is asked of the node again, not shown from the old branch
+  const asked = (h) => a.evaluate((h) => window.__fake.posts.filter((m) => m.type === 'block' && m.height === h).length, h);
+  const n152000 = await asked(152000);
+  await emit(a, 'synced', { height: H, hash: hx(H), applied: H - 152000 + 1 });
+  await a.fill('#q', '152000');
+  await a.press('#q', 'Enter');
+  t(
+    'a searched block at a height a reorganisation applied again is asked again, not shown from the old branch',
+    await until(a, (n) => window.__fake.posts.filter((m) => m.type === 'block' && m.height === 152000).length > n, n152000),
+  );
+  for (let h = H; h > H - 8; h--) await reply(a, blk(h));
+  await until(a, () => !!document.querySelector(`#mined [data-k=h${152300 - 7}]`));
+  // an open block that falls out of the last 8 and is then replaced is asked for as a search would ask it
+  await a.click(`#mined [data-k=h${H - 7}]`);
+  await until(a, () => !document.getElementById('detail').hidden);
+  await emit(a, 'synced', { height: H + 3, hash: hx(H + 3, 'd'), applied: 11 });
+  t(
+    'an open block older than the last 8 that a reorganisation replaced is asked for again (as a search)',
+    await until(a, (h) => window.__fake.posts.some((m) => m.type === 'block' && m.height === h && /^bight:s/.test(m.req)), H - 7),
+  );
+  await emit(a, 'synced', { height: H, hash: hx(H), applied: 4 });
+  for (let h = H; h > H - 8; h--) await reply(a, blk(h));
+  // the blocks searches fetched are capped at 10: the eleventh pushes the first out, and it is asked again
+  for (let i = 0; i < 11; i++) {
+    const h = 151000 + i;
+    await a.fill('#q', String(h));
+    await a.press('#q', 'Enter');
+    await until(a, (h) => window.__fake.posts.some((m) => m.type === 'block' && m.height === h), h);
+    await emit(a, 'block', { ...blk(h), req: await reqFor(a, h) });
+    await until(a, (x) => document.getElementById('detail').textContent.includes(x), hx(h));
+  }
+  const n151000 = await asked(151000);
+  await a.fill('#q', '151000');
+  await a.press('#q', 'Enter');
+  t(
+    'at most 10 searched blocks are kept: the first of 11 is asked again',
+    await until(a, (n) => window.__fake.posts.filter((m) => m.type === 'block' && m.height === 151000).length > n, n151000),
+  );
+  await emit(a, 'block', { ...blk(151000), req: await reqFor(a, 151000) });
+  // a search waiting through a reorganisation is asked again, under the new generation
+  await a.fill('#q', '152002');
+  await a.press('#q', 'Enter');
+  await until(a, () => window.__fake.posts.some((m) => m.type === 'block' && m.height === 152002));
+  const firstReq = await reqFor(a, 152002);
+  await emit(a, 'synced', { height: H, hash: hx(H, 'b'), applied: 2 });
+  t(
+    'a reorganisation asks a waiting search again, under the new generation',
+    await until(
+      a,
+      (r) => {
+        const p = window.__fake.posts.filter((m) => m.type === 'block' && m.height === 152002);
+        return p.length === 2 && p[1].req !== r && /^bight:s\d+\.\d+$/.test(p[1].req);
+      },
+      firstReq,
+    ),
+    JSON.stringify(await a.evaluate(() => window.__fake.posts.filter((m) => m.height === 152002))),
+  );
+  // the new branch's block answers the search; the replaced branch's reply, arriving after it, is not kept for later
+  const newReq = await reqFor(a, 152002);
+  await emit(a, 'block', { ...blk(152002, 'b'), req: newReq });
+  await until(a, (x) => document.getElementById('detail').textContent.includes(x), hx(152002, 'b'));
+  await emit(a, 'block', { ...blk(152002), req: firstReq });
+  await a.fill('#q', '152002');
+  await a.press('#q', 'Enter');
+  t(
+    'a late reply from the replaced branch is not kept: searched again, the new branch’s block is shown',
+    (await until(a, (x) => document.getElementById('detail').textContent.includes(x), hx(152002, 'b'))) &&
+      !(await text(a, '#detail')).includes(hx(152002)),
+    await text(a, '#detail'),
+  );
+  // the blocks kept are capped at 40: the oldest go, and a search for one asks the node again
+  await emit(a, 'synced', { height: H, hash: hx(H, 'c'), applied: 1 });
+  const gen = await a.evaluate(() => window.__fake.posts.filter((m) => m.type === 'block' && /^bight:\d+$/.test(m.req)).at(-1).req);
+  for (let h = H - 44; h <= H; h++) await emit(a, 'block', { ...blk(h, 'c'), req: gen });
+  const asks = () => a.evaluate((h) => window.__fake.posts.filter((m) => m.type === 'block' && m.height === h).length, H - 44);
+  const before = await asks();
+  await a.fill('#q', String(H - 44));
+  await a.press('#q', 'Enter');
+  t(
+    'at most 40 blocks are kept: a search for the oldest of 45 asks the node again',
+    await until(a, (h) => window.__fake.posts.filter((m) => m.type === 'block' && m.height === h.h).length > h.n, { h: H - 44, n: before }),
+  );
+  // Escape with the focus on a row (not in the detail, not its opener) closes the detail and leaves the focus on the row
+  await a.click(`#mined [data-k=h${H}]`);
+  await until(a, () => !document.getElementById('detail').hidden);
+  await a.focus('#rows tr .txbtn');
+  await a.keyboard.press('Escape');
+  t(
+    'Escape from a row closes the detail and leaves the focus on that row',
+    (await until(a, () => document.getElementById('detail').hidden)) &&
+      (await a.evaluate(() => !!document.activeElement?.closest?.('#rows'))),
+  );
+  // refusals: the last 30 listed
+  for (let i = 0; i < 35; i++)
+    await emit(a, 'log', { text: `mempool: refused ${i.toString(16).padStart(12, '0')}… from the mirror: input 0: bad`, level: 'info' });
+  t(
+    'the refusals list keeps the last 30',
+    (await a.evaluate(() => document.getElementById('refusals').textContent.split('\n').length)) === 30,
+  );
+  // a reply for another transaction than the one asked is not shown as it
+  const far = many[2000];
+  await a.evaluate(
+    ([tx, other]) => {
+      document.getElementById('q').value = tx;
+      document.getElementById('search').requestSubmit();
+      window.__fake.emit('mempool-tx', {
+        txid: other,
+        found: true,
+        vsize: 1,
+        fee: 1,
+        feeRate: 1,
+        at: 1,
+        req: 'bight',
+        inputs: [],
+        outputs: [],
+      });
+    },
+    [far.txid, many[2001].txid],
+  );
+  t(
+    'a reply for another transaction than the one asked is ignored; the one asked is shown',
+    (await until(a, (x) => document.getElementById('detail').textContent.includes(x), far.txid)) &&
+      !(await text(a, '#detail')).includes(many[2001].txid),
+    await text(a, '#detail'),
+  );
+  // a hidden tab asks no template; shown, it asks
+  const tpls = () => a.evaluate(() => window.__fake.posts.filter((m) => m.type === 'template').length);
+  await a.evaluate(() => Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }));
+  await a.waitForTimeout(2200);
+  const hiddenFrom = await tpls();
+  await emit(a, 'mempool', mp(many.slice(0, 10)));
+  await a.waitForTimeout(2500);
+  t('a hidden tab asks the node for no template', (await tpls()) === hiddenFrom, `${hiddenFrom} → ${await tpls()}`);
+  await a.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  t(
+    '…and asks once when shown',
+    await until(a, (n) => window.__fake.posts.filter((m) => m.type === 'template').length > n, hiddenFrom, 4000),
+  );
+  // a stopped node: nothing more is asked of it
+  const blocksAsked = () => a.evaluate(() => window.__fake.posts.filter((m) => m.type === 'block').length);
+  await emit(a, 'error', { text: 'the node did not wipe in time and is stopped', fatal: true });
+  const askedBefore = await blocksAsked();
+  await emit(a, 'synced', { height: H + 5, hash: hx(H + 5, 'c'), applied: 5 });
+  await a.waitForTimeout(5600);
+  t(
+    'a stopped node is asked for no blocks, and the stop is said once',
+    (await blocksAsked()) === askedBefore && (await a.evaluate(() => document.querySelectorAll('#banners .banner.bad').length)) === 1,
+    await text(a, '#banners'),
+  );
+  t('no page errors (round 5)', !p.errors.length, p.errors.join(' | '));
+  await p.ctx.close();
+}
+// 17: a wipe that fails quietly (the node left stopped, no message): nothing more is asked of it
+{
+  const p = await profile({ 'reef:started': '1' }, { config: { wipeFailQuiet: true } });
+  const a = await p.open();
+  await until(a, () => window.__fake.starts === 1);
+  // the loader knows a height from the first sync's progress before that sync is done: no block is asked meanwhile
+  await a.evaluate(() => (window.__fake.node.height = 152390));
+  await a.waitForTimeout(5600);
+  t(
+    'no block is asked before the first sync is done (the node is busy with it)',
+    (await a.evaluate(() => window.__fake.posts.filter((m) => m.type === 'block').length)) === 0,
+  );
+  await emit(a, 'synced', { height: 152400, hash: 'ee'.repeat(32), applied: 1 });
+  await a.click('#settings');
+  await a.click('#o-wipe');
+  await a.click('#o-wipe');
+  await until(a, () => /not wiped/.test(document.getElementById('o-wipenote').textContent));
+  await a.evaluate(() => document.getElementById('dlg').close());
+  t(
+    'a wipe that failed quietly with the node stopped: the pill says stopped',
+    await until(a, () => /stopped/.test(document.getElementById('pilltxt').textContent)),
+  );
+  const n0 = await a.evaluate(() => window.__fake.posts.filter((m) => m.type === 'block').length);
+  await emit(a, 'synced', { height: 152410, hash: 'ef'.repeat(32), applied: 10 });
+  await a.waitForTimeout(5600);
+  t(
+    '…and no block is asked of it afterwards',
+    (await a.evaluate(() => window.__fake.posts.filter((m) => m.type === 'block').length)) === n0,
+  );
+  await p.ctx.close();
+}
+// 18: the welcome's "Not now": the pill says not started
+{
+  const p = await profile();
+  const a = await p.open();
+  await until(a, () => !!document.querySelector('#welcome[open]'));
+  await a.click('#wl-later');
+  t(
+    'after "Not now" the pill says not started, not "starting"',
+    await until(a, () => document.getElementById('pilltxt').textContent === 'not started'),
   );
   await p.ctx.close();
 }

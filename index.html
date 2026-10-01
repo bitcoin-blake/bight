@@ -8,7 +8,7 @@
 <meta name="description" content="A mempool monitor in a browser tab for txbt4, the BLAKE2b testnet4: every transaction shown was validated by the tab's own node, and the next block is the one this tab would build.">
 <meta property="og:site_name" content="Bight"><meta property="og:title" content="Bight · a mempool in a tab"><meta property="og:description" content="A mempool monitor that validates every transaction itself, in the browser. The next block on the page is the one this tab would build. BLAKE2b testnet4."><meta property="og:type" content="website"><meta property="og:url" content="https://bitcoin-blake.github.io/bight/"><meta property="og:image" content="https://bitcoin-blake.github.io/bight/og.png"><meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23171a2b'/%3E%3Cpath d='M6 22c4-10 8-10 10 0s6 10 10 0' fill='none' stroke='%23f0a04b' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
-<script src="theme.js?v=2026-10-01.7"></script>
+<script src="theme.js?v=2026-10-01.8"></script>
 <style>
 :root {
   color-scheme: dark;
@@ -72,7 +72,7 @@ h1 { font-size:17.5px; margin:0; font-weight:700; display:flex; align-items:cent
 h2 { font-size:11.5px; text-transform:uppercase; letter-spacing:1px; color:var(--mut); margin:0 0 12px; font-weight:650 }
 
 .blocksrow { display:flex; align-items:stretch; gap:14px; overflow-x:auto; padding:6px 2px 16px; position:relative }
-.skip { position:absolute; left:-9999px } .skip:focus { position:static; display:inline-block; margin:0 0 8px; padding:4px 10px; border:1px solid var(--fieldline); border-radius:8px; background:var(--panel2) }
+.skip { position:absolute; left:-9999px } .skip:focus { left:18px; z-index:6; display:inline-block; padding:4px 10px; border:1px solid var(--fieldline); border-radius:8px; background:var(--panel2); box-shadow:var(--shadow) }
 .blocks { display:flex; gap:10px }
 .divider { width:0; border-left:2px dashed var(--line); position:relative; margin:18px 16px 0 }
 .divider::after { content:"chain tip"; position:absolute; top:-18px; left:-24px; font-size:10.5px; letter-spacing:.4px; color:var(--mut); white-space:nowrap }
@@ -138,7 +138,9 @@ dialog .f { padding:12px 18px; border-top:1px solid var(--line); display:flex; j
   .top { flex-wrap:wrap; gap:10px; position:static }
   .search { width:100%; flex-basis:100% } .search input { max-width:none; flex:1 } .top .fill { display:none }
   .top .brand span { display:none }
-  .pill { min-width:0; flex:1 1 auto; overflow:hidden } #pilltxt { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0 }
+  /* the brand and the two buttons on the first row, the pill on its own (whatever its words), the search below */
+  .top .brand { margin-right:auto } .pill { order:1; flex:1 1 100%; min-width:0; overflow:hidden } .search { order:2 }
+  #pilltxt { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0 }
   .pb { width:72px } #nodeinfo, .status .ver { display:none } .status .msg { min-width:0; flex:1 1 auto }
   td.mono .txbtn { max-width:12ch; overflow:hidden; text-overflow:ellipsis; display:inline-block; vertical-align:bottom }
 }
@@ -167,7 +169,7 @@ body.embedded .top .brand span { display:none }
   <button class="btn iconbtn" id="theme" type="button" aria-label="Switch theme"><svg aria-hidden="true" class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg><svg aria-hidden="true" class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></button><button class="btn iconbtn" id="settings" type="button" aria-label="Settings"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button><form class="search" id="search" role="search"><label class="sr" for="q">Search a transaction id, a block hash or a block height</label><input id="q" placeholder="txid, hash or height" spellcheck="false" autocomplete="off"><button type="submit">Search</button></form></header>
 <section id="banners" aria-label="Notices"></section><div id="announce" class="sr" role="status" aria-live="polite"></div>
 <main>
-  <div class="panel idlecard"><h2>This tab is idle</h2><p>Another tab of this browser runs the node, and with it the mempool. Bight shows them where the node runs; this tab takes over as soon as that tab closes.</p></div>
+  <div class="panel idlecard"><h2>This tab is idle</h2><p>Another tab of this browser runs the node (Reef, Bight, Winch or Hitch), and with it the mempool. Bight shows them where the node runs; this tab takes over as soon as that tab closes.</p><button class="btn" id="idle-check" type="button">Check again</button></div>
   <h2 id="blocks-h">Blocks · the next ones as this tab would build them, then the last ones it validated</h2>
   <a class="skip" href="#mp-h">Skip the blocks</a>
   <div class="blocksrow" id="blocksrow" role="group" aria-labelledby="blocks-h"><div class="blocks proj" id="proj"><div class="blk empty"><span class="h">next block</span><span class="s">the mempool is followed once the tab is up to date</span></div></div><div class="divider" aria-hidden="true"></div><div class="blocks" id="mined"></div></div>
@@ -188,6 +190,6 @@ body.embedded .top .brand span { display:none }
   <div class="note">Bight, Reef, Winch and Hitch share this site's storage, so one copy of the node's files serves all four, and one tab runs the node. Source: <a href="https://github.com/bitcoin-blake/bight" target="_blank" rel="noopener">github.com/bitcoin-blake/bight</a>.</div>
 </div><div class="f"><button class="btn" id="o-reset" type="button" style="margin-right:auto">Reset to defaults</button><button class="btn" id="o-cancel" type="button">Cancel</button><button class="btn" id="o-ok" type="button">OK</button></div></dialog>
 <dialog id="welcome" aria-labelledby="wl-t" aria-describedby="wl-d"><div class="t" id="wl-t">Welcome to Bight</div><div class="b"><p id="wl-d" style="margin:0">To show the mempool, this tab runs a node: it downloads the chain's state at block <span id="wl-base">150,307</span> (<b id="wl-size">870 MB</b>), checks it, and validates every block since. That takes a few minutes on a fast connection and longer on a slow one; it is kept for next time (and shared with Reef, Winch and Hitch), and resumes if interrupted. Avoid starting on a metered connection.</p><p id="wl-space" class="note" style="margin:0"></p></div><div class="f"><button class="btn" id="wl-later" type="button">Not now</button><button class="btn" id="wl-start" type="button">Start</button></div></dialog>
-<script type="module" src="bight.js?v=2026-10-01.7"></script>
+<script type="module" src="bight.js?v=2026-10-01.8"></script>
 </body>
 </html>

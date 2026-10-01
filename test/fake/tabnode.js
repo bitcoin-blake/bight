@@ -1,12 +1,12 @@
 // A stand-in for blaketestnode's browser/tabnode.js, the page's only seam to the node: the smoke test serves it in place of
-// the pinned file and drives the page with window.__fake.emit(type, message). Like the real loader (at 5550637), it keeps
+// the pinned file and drives the page with window.__fake.emit(type, message). Like the real loader (at b54e498), it keeps
 // node.* from the messages before the page sees them, emits every message on 'message' too, holds the shared node lock in
 // start() (or reports node.lockError when the browser refuses it), answers mempool-get with mempool-tx from what it was
 // last sent, and clears node.unresponsive on 'responsive'. window.__fake records the options the page created it with,
 // what the page posted, how often it started, followed and wiped, and the clock offsets it gave (setSkew).
 // window.__fakeConfig (set before the page loads): { lockError } makes the lock refused; { wipeFail } makes a wipe fail as
 // the loader's does when no node answers it (phase 'error', a fatal error message, a rejection); { wipeLeaves: [names] }
-// makes a wipe leave those files.
+// makes a wipe leave those files; { wipeFailQuiet } makes it fail with the node stopped (phase 'error') but no message.
 export const mib = (b) => `${(b / 1048576).toFixed(1)} MiB`;
 export const n = (x) => Number(x).toLocaleString('en-US');
 export function createTabNode(opts = {}) {
@@ -45,7 +45,9 @@ export function createTabNode(opts = {}) {
     if (t === 'nostr') node.nostr = m;
     if (t === 'unresponsive') Object.assign(node, { unresponsive: true, error: 'the node has not answered for two minutes' });
     if (t === 'responsive') Object.assign(node, { unresponsive: false, error: null });
-    if (t === 'error') node.error = m.text;
+    // as the loader at b54e498: an error answering a request (it echoes req, or names a lookup) is not the node's state
+    if (t === 'error' && !(node.synced && (m.req != null || /Block not found|sync first|not in the set|not in mempool/.test(m.text))))
+      node.error = m.text;
     fire(t, m);
     fire('message', { type: t, ...m });
   };
@@ -129,6 +131,10 @@ export function createTabNode(opts = {}) {
         Object.assign(node, { phase: 'error', synced: false, error: text });
         emit('error', { text, fatal: true });
         throw new Error('the node did not wipe in time, and nothing is pending: close the other tabs of this site and try again');
+      }
+      if (cfg.wipeFailQuiet) {
+        Object.assign(node, { phase: 'error', synced: false, error: 'the node did not wipe in time and is stopped' });
+        throw new Error('the node did not wipe in time');
       }
       return { removed: ['x'], failed: cfg.wipeLeaves ?? [] };
     },
