@@ -23,8 +23,6 @@ on:
         type: choice
         options: [none, mismatch]
         default: none
-  schedule:
-    - cron: '47 * * * *'
 permissions:
   contents: read
 concurrency:
