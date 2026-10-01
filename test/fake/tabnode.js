@@ -1,10 +1,24 @@
 // A stand-in for blaketestnode's browser/tabnode.js, the page's only seam to the node: the smoke test serves it in place of
-// the pinned file and drives the page with window.__fake.emit(type, message). Like the real loader, it keeps node.* from
-// the messages before the page sees them, and start() holds the shared node lock.
+// the pinned file and drives the page with window.__fake.emit(type, message). Like the real loader (at 5550637), it keeps
+// node.* from the messages before the page sees them, emits every message on 'message' too, holds the shared node lock in
+// start() (or reports node.lockError when the browser refuses it), answers mempool-get with mempool-tx from what it was
+// last sent, and clears node.unresponsive on 'responsive'. window.__fake records the options the page created it with,
+// what the page posted, and how often it started, followed and wiped. window.__fakeConfig (set before the page loads):
+// { lockError } makes the lock refused.
 export const mib = (b) => `${(b / 1048576).toFixed(1)} MiB`;
 export const n = (x) => Number(x).toLocaleString('en-US');
-export function createTabNode() {
-  const node = { phase: 'starting', hist: [], synced: false, mempool: null, error: null, height: null, st: null, nostr: null };
+export function createTabNode(opts = {}) {
+  const node = {
+    phase: 'starting',
+    hist: [],
+    synced: false,
+    mempool: null,
+    error: null,
+    height: null,
+    st: null,
+    nostr: null,
+    retryAt: null,
+  };
   const h = new Map();
   const on = (t, f) => {
     (h.get(t) ?? h.set(t, new Set()).get(t)).add(f);
@@ -14,7 +28,7 @@ export function createTabNode() {
     for (const f of h.get(t) ?? []) f(a);
   };
   const posts = [];
-  const emit = (t, m) => {
+  const emit = (t, m = {}) => {
     if (t === 'mempool') node.mempool = m;
     if (t === 'synced')
       Object.assign(node, {
@@ -24,35 +38,79 @@ export function createTabNode() {
         hash: m.hash,
         time: m.time ?? Math.floor(Date.now() / 1000),
         lastSync: Date.now(),
+        st: node.st ?? {},
       });
     if (t === 'nostr') node.nostr = m;
+    if (t === 'unresponsive') Object.assign(node, { unresponsive: true, error: 'the node has not answered for two minutes' });
+    if (t === 'responsive') Object.assign(node, { unresponsive: false, error: null });
+    if (t === 'error') node.error = m.text;
     fire(t, m);
     fire('message', { type: t, ...m });
   };
-  const fake = (window.__fake = { node, emit, posts, starts: 0, follows: 0, wipes: 0 });
-  const start = async () => {
+  const cfg = window.__fakeConfig ?? {};
+  const fake = (window.__fake = { node, emit, posts, opts, starts: 0, forced: 0, follows: [], wipes: 0 });
+  const start = async ({ force = false } = {}) => {
     fake.starts++;
+    if (force) {
+      fake.forced++;
+      node.st = {};
+      return true;
+    }
+    if (cfg.lockError) {
+      node.lockError = cfg.lockError;
+      node.phase = 'busy';
+      return false;
+    }
+    // as the real loader: a reload can find the lock still held by the page it replaces, so wait up to three seconds
     const got = await new Promise((res) =>
-      navigator.locks.request('bitcoin-blake:node', { ifAvailable: true }, (l) => (res(!!l), l ? new Promise(() => {}) : null)),
+      navigator.locks
+        .request('bitcoin-blake:node', { signal: AbortSignal.timeout(3000) }, () => (res(true), new Promise(() => {})))
+        .catch(() => res(false)),
     );
     if (!got) {
+      node.busy = true;
       node.phase = 'busy';
       return false;
     }
     node.st = {};
     return true;
   };
+  const post = (m) => {
+    posts.push(m);
+    if (m.type === 'mempool-get')
+      setTimeout(() => {
+        const e = (node.mempool?.all ?? []).find((x) => x[0] === m.txid);
+        emit(
+          'mempool-tx',
+          e
+            ? {
+                txid: m.txid,
+                found: true,
+                vsize: e[1],
+                fee: e[2],
+                feeRate: e[2] / e[1],
+                at: e[3],
+                fed: !!e[4],
+                via: 'fake',
+                inputs: [],
+                outputs: [],
+                req: m.req,
+              }
+            : { txid: m.txid, found: false, req: m.req },
+        );
+      }, 20);
+  };
   return {
     node,
     on,
     emit,
     posts,
-    opts: {},
+    opts,
     seeding: false,
     start,
-    post: (m) => posts.push(m),
-    followMempool() {
-      fake.follows++;
+    post,
+    followMempool(o) {
+      fake.follows.push(o);
     },
     seedSupported: async () => true,
     setTorrent() {},
