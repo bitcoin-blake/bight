@@ -16,6 +16,8 @@ import * as SD from '../lib/schedule.mjs';
 import * as SET from '../lib/settings.mjs';
 import * as V from '../lib/view.mjs';
 const id = (c) => c.repeat(64).slice(0, 64);
+// a realistic time base (ms since 1970) for the graph's samples: a span is a difference, never a time alone
+const T0 = 1.7e12;
 const tx = (c, vsize, feeRate, o = {}) => ({ txid: id(c), vsize, fee: Math.round(vsize * feeRate), feeRate, at: 1000, ...o });
 
 // ---- packing, the way the node's template builder packs
@@ -144,8 +146,8 @@ t('the hue runs from blue at 1 to orange at 1000', F.feeHue(1) === 210 && F.feeH
     SE.blockSeen(block, seen, { followedAt: 1500, arrival: alone(2000), prevArrival: alone(1600) }).words === '1 of 2 seen first',
   );
   t(
-    'a block whose previous block came before the tab listened is not counted: "not listening then"',
-    SE.blockSeen(block, seen, { followedAt: 1500, arrival: alone(2000), prevArrival: alone(1400) }).words === 'not listening then' &&
+    'a block whose previous block came before the tab listened is not counted',
+    SE.blockSeen(block, seen, { followedAt: 1500, arrival: alone(2000), prevArrival: alone(1400) }).counted === false &&
       SE.blockSeen(block, seen, { followedAt: 1500, arrival: alone(2000), prevArrival: null }).counted === false &&
       SE.blockSeen(block, seen, { followedAt: 1500, arrival: alone(1000), prevArrival: alone(1600) }).counted === false &&
       SE.blockSeen(block, seen, { followedAt: null, arrival: alone(2000), prevArrival: alone(1600) }).counted === false,
@@ -181,9 +183,16 @@ t('the hue runs from blue at 1 to orange at 1000', F.feeHue(1) === 210 && F.feeH
   SE.rememberSeen(
     many,
     Array.from({ length: 30 }, (_, i) => tx('k' + i, 1, 1)),
-    { cap: 20, evict: 5 },
+    { cap: 20, evict: 5, margin: 10 },
   );
-  t('what was seen is capped, the oldest evicted first', many.size === 25 && !many.has(id('k0')) && many.has(id('k29')));
+  t('what is still listed is never evicted, however many', many.size === 30);
+  const now5 = Array.from({ length: 5 }, (_, i) => tx('n' + i, 1, 1));
+  SE.rememberSeen(many, now5, { cap: 20, evict: 5, margin: 10 });
+  t(
+    'over the cap, what is no longer listed goes, oldest first, down to the cap less evict',
+    many.size === 15 && !many.has(id('k0')) && !many.has(id('k19')) && many.has(id('k20')) && now5.every((x) => many.has(x.txid)),
+    String(many.size),
+  );
   const at = new Map();
   SE.rememberSeen(
     at,
@@ -191,6 +200,29 @@ t('the hue runs from blue at 1 to orange at 1000', F.feeHue(1) === 210 && F.feeH
     { cap: 20, evict: 5 },
   );
   t('...and not before the cap is passed', at.size === 20);
+  SE.rememberSeen(at, [tx('q0', 1, 1)], { cap: 20, evict: 5, margin: 0 });
+  t('...and at the cap exactly, nothing goes', at.size === 20);
+  // a mempool larger than the cap: a block takes 3,000 of 21,000 and the pool refills; its transactions are still known
+  {
+    const big = new Map();
+    const tq = (i) => ({ txid: 'x' + i, fee: 300, vsize: 150, feeRate: 2, at: 1000 + i });
+    let pool = Array.from({ length: 21000 }, (_, i) => tq(i));
+    SE.rememberSeen(big, pool);
+    const blockBig = { txids: ['cb', ...pool.slice(0, 3000).map((x) => x.txid)], nTx: 3001 };
+    pool = [...pool.slice(3000), ...Array.from({ length: 3000 }, (_, i) => tq(100000 + i))];
+    for (let k = 0; k < 5; k++) SE.rememberSeen(big, pool);
+    const sb = SE.blockSeen(blockBig, big, { followedAt: 1, arrival: { at: 10, alone: true }, prevArrival: { at: 5 } });
+    t('a pool over the cap does not wipe out what a block just took (3,000 of 3,000 seen first)', sb.seen === 3000, String(sb.seen));
+  }
+  t(
+    'a block watched arriving whose previous block came before listening: "listening for only part of its interval"',
+    SE.blockSeen(block, seen, { followedAt: 1500, arrival: alone(2000), prevArrival: alone(1400) }).words ===
+      'listening for only part of its interval' &&
+      SE.blockSeen(block, seen, { followedAt: 1500, arrival: { at: 2000, alone: false }, prevArrival: alone(1400) }).words ===
+        'not listening then' &&
+      SE.blockSeen(block, seen, { followedAt: 1500, arrival: alone(1500), prevArrival: alone(1400) }).words === 'not listening then' &&
+      SE.blockSeen(block, seen, { followedAt: null, arrival: alone(2000), prevArrival: null }).words === 'not listening then',
+  );
 }
 // ---- search
 {
@@ -285,9 +317,9 @@ t('the hue runs from blue at 1 to orange at 1000', F.feeHue(1) === 210 && F.feeH
   );
   t(
     'the span is said in minutes, then hours',
-    SR.spanWords([{ t: 0 }, { t: 30 * 60000 }]) === 'the last 30 minutes' &&
-      SR.spanWords([{ t: 0 }, { t: 3 * 3600000 }]) === 'the last 3.0 hours' &&
-      SR.spanWords([{ t: 0 }]) === 'this session',
+    SR.spanWords([{ t: T0 }, { t: T0 + 30 * 60000 }]) === 'the last 30 minutes' &&
+      SR.spanWords([{ t: T0 }, { t: T0 + 3 * 3600000 }]) === 'the last 3.0 hours' &&
+      SR.spanWords([{ t: T0 }]) === 'this session',
   );
 }
 // ---- words
@@ -418,6 +450,7 @@ t(
   t(
     'an empty page says why: not followed, nothing heard, empty',
     ST.emptyWords(null) === 'the mempool is followed once the tab is up to date' &&
+      ST.emptyWords(null, { notStarted: true }) === 'not started: start the node to follow the mempool' &&
       ST.emptyWords(null, { following: true }) === 'nothing heard yet' &&
       ST.emptyWords({ count: 0, stats: { seen: 0 } }) === 'nothing heard yet' &&
       ST.emptyWords({ count: 0, stats: { seen: 3 } }) === 'the mempool is empty' &&
@@ -706,6 +739,32 @@ t(
     { sw: { counted: true, words: '', seen: 0, others: 299, knownCount: 0, knownFees: 0 }, seenTx: new Map(), signedWords: 'x' },
   );
   t('a long block detail is capped, with how many more', (big.match(/<tr data-t/g) ?? []).length === 200 && /and 100 more/.test(big));
+  {
+    const sw0 = { counted: true, words: '', seen: 0, others: 1, knownCount: 0, knownFees: 0 };
+    const blk2 = (k) => ({ height: 9, hash: id('h'), time: 100, nTx: k, size: 9, txids: Array.from({ length: k }, (_, i) => id('w' + i)) });
+    const at2 = V.blockDetail(blk2(2), { sw: sw0, seenTx: new Map(), signedWords: 'x', cap: 2 });
+    const over2 = V.blockDetail(blk2(3), { sw: sw0, seenTx: new Map(), signedWords: 'x', cap: 2 });
+    t('a block detail at its cap exactly says no "more"; one over says 1 more', !/more<\/p>/.test(at2) && /and 1 more/.test(over2));
+    const pb = (k) => ({ txs: Array.from({ length: k }, (_, i) => tx('p' + i, 1, 1)), vsize: k, fees: k, min: 1, max: 1, wmed: 1 });
+    t(
+      'a projected detail at its cap exactly says no "more"; one over says 1 more',
+      !/more<\/p>/.test(V.projDetail(pb(2), 1, { cap: 2 })) && /and 1 more/.test(V.projDetail(pb(3), 1, { cap: 2 })),
+    );
+    t(
+      'projected block i is said as block i + 1 (the third is "Projected block 3")',
+      /Projected block 3 /.test(V.projDetail(pb(1), 2, {})) && /projected block 3"/.test(V.projDetail(pb(1), 2, {})),
+    );
+    const sAt = 1.7e9;
+    t(
+      'a transaction seen and gone is timed from its seconds',
+      V.notFoundWords({ where: 'seen', seen: { at: sAt, vsize: 1, feeRate: 1 } }).includes(new Date(sAt * 1000).toLocaleTimeString()),
+    );
+    t(
+      'a detail table scrolls in a focusable region named for it',
+      /<div class="dtbl" tabindex="0" role="region" aria-label="Transactions in block 9">/.test(at2) &&
+        /aria-label="Transactions in the next block"/.test(V.projDetail(pb(1), 0, {})),
+    );
+  }
   t(
     'not found says where it looked',
     /blocks 5–6 \(the last 2 blocks this tab holds\)/.test(
@@ -923,8 +982,8 @@ t(
   t('a sample over a cap that was passed trims back to the cap', cap.length === 2 && cap[0].t === 3);
   t(
     'the span is in minutes up to 89, then hours',
-    SR.spanWords([{ t: 0 }, { t: 89 * 60000 }]) === 'the last 89 minutes' &&
-      SR.spanWords([{ t: 0 }, { t: 90 * 60000 }]) === 'the last 1.5 hours',
+    SR.spanWords([{ t: T0 }, { t: T0 + 89 * 60000 }]) === 'the last 89 minutes' &&
+      SR.spanWords([{ t: T0 }, { t: T0 + 90 * 60000 }]) === 'the last 1.5 hours',
   );
   t(
     'a version is the whole string: nothing before or after',
@@ -1148,11 +1207,11 @@ t(
   );
   t(
     'the span under a minute in seconds, at one minute "the last minute"',
-    SR.spanWords([{ t: 0 }, { t: 20000 }]) === 'the last 20 s' &&
-      SR.spanWords([{ t: 0 }, { t: 59400 }]) === 'the last 59 s' &&
-      SR.spanWords([{ t: 0 }, { t: 60000 }]) === 'the last minute' &&
-      SR.spanWords([{ t: 0 }, { t: 89000 }]) === 'the last minute' &&
-      SR.spanWords([{ t: 0 }, { t: 120000 }]) === 'the last 2 minutes',
+    SR.spanWords([{ t: T0 }, { t: T0 + 20000 }]) === 'the last 20 s' &&
+      SR.spanWords([{ t: T0 }, { t: T0 + 59400 }]) === 'the last 59 s' &&
+      SR.spanWords([{ t: T0 }, { t: T0 + 60000 }]) === 'the last minute' &&
+      SR.spanWords([{ t: T0 }, { t: T0 + 89000 }]) === 'the last minute' &&
+      SR.spanWords([{ t: T0 }, { t: T0 + 120000 }]) === 'the last 2 minutes',
   );
   // seen first: strictly after
   const blk = { txids: [id('c'), id('b')], nTx: 2 };

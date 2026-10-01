@@ -311,4 +311,45 @@ t(
   SO.DEFAULT_SNAP === SO.MIRROR + file && SO.defaultsFor({ SNAPSHOT: { file } }).snapshot === SO.DEFAULT_SNAP,
   `${SO.DEFAULT_SNAP} vs ${file}`,
 );
+// tools/version-bump.mjs, run in a copy: every place the version lives moves together and upwards; a lower or malformed
+// version is refused, and nothing is written then
+{
+  const { mkdtempSync, mkdirSync, copyFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(tmpdir() + '/bight-bump-');
+  mkdirSync(dir + '/tools');
+  mkdirSync(dir + '/lib');
+  for (const f of ['tools/version-bump.mjs', 'lib/version.mjs', 'version.json', 'bight.js', 'index.html'])
+    copyFileSync(new URL('../' + f, import.meta.url), `${dir}/${f}`);
+  const bump = (arg = '') => {
+    try {
+      execSync(`node tools/version-bump.mjs ${arg}`, { cwd: dir, stdio: 'pipe' });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const read = (f) => readFileSync(`${dir}/${f}`, 'utf8');
+  const places = () => [
+    JSON.parse(read('version.json')).version,
+    read('bight.js').match(/export const VERSION = '([^']+)'/)?.[1],
+    read('index.html').match(/bight\.js\?v=([^"]+)"/)?.[1],
+    read('index.html').match(/theme\.js\?v=([^"]+)"/)?.[1],
+  ];
+  const ok = bump();
+  const after = places();
+  t(
+    'version-bump writes the next version in all four places, above the current one',
+    ok && new Set(after).size === 1 && after[0] !== v && after[0] > v.slice(0, 10),
+    JSON.stringify(after),
+  );
+  const lower = bump(v);
+  const malformed = bump('2026-10-01');
+  t(
+    'version-bump refuses a version not above the current one, or malformed, and writes nothing',
+    !lower && !malformed && JSON.stringify(places()) === JSON.stringify(after),
+    JSON.stringify(places()),
+  );
+  rmSync(dir, { recursive: true, force: true });
+}
 done();

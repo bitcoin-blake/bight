@@ -5,7 +5,7 @@
 // The decisions (packing, bands, what was seen first, the chain cache, search, the status words, the sources, the
 // settings, the markup of tiles and details) are lib/*.mjs, tested; this file wires them to the document, patching in
 // place so a focused or selected element survives the next update.
-export const VERSION = '2026-10-01.9';
+export const VERSION = '2026-10-01.10';
 const $ = (id) => document.getElementById(id);
 const NODE = 'https://cdn.jsdelivr.net/gh/bitcoin-blake/blaketestnode@b54e498a5603771586dc8d9dcb963223014dfd8a';
 const RELAYS = [
@@ -135,11 +135,32 @@ const say = (text) => {
 };
 // a stopped node is said once: the fatal notice replaces the node's own error notice (the same words), which pill() then
 // leaves out for as long as the fatal one is there
+// What is on screen stays, greyed, with the time it stopped: the figures are as they were then, not live.
 const fatal = (text) => {
   $('syncmsg').textContent = text;
   unbanner('nodeerr');
   banner('fatal', 'bad', text, [['Reload', () => location.reload()]]);
+  markStopped();
 };
+function markStopped() {
+  const main = document.querySelector('main');
+  if (!main || main.classList.contains('stopped')) return;
+  const at = new Date().toLocaleTimeString();
+  main.classList.add('stopped');
+  const note = document.createElement('p');
+  note.id = 'stopnote';
+  note.className = 'note';
+  note.textContent = `Stopped at ${at}: the blocks and the mempool below are as they were then, not live.`;
+  main.prepend(note);
+  for (const id of ['blocks-h', 'mp-h']) {
+    const h = $(id);
+    if (!h) continue;
+    const s = document.createElement('span');
+    s.className = 'mut asof';
+    s.textContent = ` · as of ${at}`;
+    h.append(s);
+  }
+}
 const fatalShown = () => !!document.querySelector('#banners [data-b="fatal"]');
 // in a frame whose page is on another site, nothing that downloads, trusts a source or overrides the lock is done on a click
 // (the page around it could have placed that click); it says to open Bight in its own tab instead
@@ -363,11 +384,18 @@ tn.on('message', (m) => {
   }
   if (m.type === 'responsive' || m.type === 'unresponsive' || m.type === 'error') pill();
   if (m.type === 'mempool-tx') onMempoolTx(m);
+  if (m.type === 'error' && m.req === TEMPLATE_REQ) {
+    const why = ST.plainError(m.text).slice(0, 120);
+    state.template = { height: (node.height ?? 0) + 1, txs: 0, fees: 0, weight: 0, checks: { ok: false, failed: [why] }, buildError: why };
+    scheduleRender();
+  }
   // a request the node cannot answer (a block it does not have) is answered with an error that echoes its req: the search's
   // answer only when it is the search still waiting (a tile's request refused by a rollback, or an earlier search's, is not)
   if (m.type === 'error' && m.req != null && state.pendingSearch && m.req === state.pendingSearch.req) {
     const h = state.pendingSearch.height;
     dropPending();
+    // nothing is open for that height any more: a later reorganisation does not bring the abandoned search back
+    if (state.openFound === h) state.openFound = null;
     openDetail(
       `<h2 id="dtitle">Block ${esc(n(h))}</h2><p class="mut">the node has no block ${esc(n(h))} on its chain now (a reorganisation or a rollback may have just changed it); search again</p>`,
       { kind: 'q' },
@@ -395,9 +423,11 @@ tn.on('synced', (m) => {
   const from = m.height - (m.applied ?? 0) + 1;
   const replaced = [...state.wanted.keys()].filter((h) => h > m.height || (m.applied > 0 && h >= from && state.arrived.has(h)));
   const gone = (h) => h > m.height || dropped.includes(h) || (m.applied > 0 && h >= from);
+  // every request still out was asked under the old generation, and its reply will be ignored: all are asked again now,
+  // not after the 30 s retry (the tiles would sit empty until then)
   if (dropped.length || replaced.length) {
     state.gen++;
-    for (const h of [...dropped, ...replaced]) state.wanted.delete(h);
+    state.wanted.clear();
   }
   // a block a search fetched at a height this pass applied (or above the tip) is of the branch it replaced, whatever the
   // generation: it is fetched again if searched again
@@ -410,7 +440,7 @@ tn.on('synced', (m) => {
     const h = state.selected;
     replacedDetail(h);
     // the tiles ask for the last 8 heights only: an older block shown is asked for as a search would ask it
-    if (h <= m.height && h <= m.height - 8) askSearch(h, { keepOpen: true });
+    if (h <= m.height - 8) askSearch(h, { keepOpen: true });
   }
   if (open && state.openFound != null && gone(state.openFound)) {
     const h = state.openFound;
@@ -494,10 +524,13 @@ tn.on('mempool', (mp) => {
 // whether it is still wanted is decided when the request goes, not when it was queued
 // a hidden tab does not ask (each build checks a whole block in the worker's one queue, beside the mempool's adds): it asks
 // once when shown
+// the template request names itself: a build that throws is answered with an error that echoes it (kept out of the node's
+// state by the loader), shown as the build failing, not as the node failing
+const TEMPLATE_REQ = 'bight:t';
 const askTemplate = (() => {
   const go = SD.throttle(() => {
     if (document.hidden) return void (state.templateWanted = true);
-    if (node.synced && !state.wiped && !state.idle) tn.post({ type: 'template', pay: '6a00' });
+    if (node.synced && !state.wiped && !state.idle) tn.post({ type: 'template', pay: '6a00', req: TEMPLATE_REQ });
   }, 2000);
   return () => node.synced && !state.wiped && go();
 })();
@@ -595,7 +628,7 @@ function renderProjected(blocks) {
     // the same key as the full next block, so the focus stays on it when the mempool empties or fills
     const e = V.emptyNextTile({
       built: !!node.mempool && tw.ok,
-      words: ST.emptyWords(node.mempool, { following: state.following }) ?? 'the mempool is empty',
+      words: ST.emptyWords(node.mempool, { following: state.following, notStarted: state.notStarted }) ?? 'the mempool is empty',
     });
     items.push({
       key: 'p0',
@@ -856,7 +889,7 @@ function renderRows(all, blocks) {
   const t0 = now();
   const rows = [...all].sort((a, b) => b.at - a.at).slice(0, 300);
   if (!rows.length) {
-    tb.innerHTML = `<tr><td colspan="6" class="mut">${esc(ST.emptyWords(node.mempool, { following: state.following }) ?? 'empty')}</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="6" class="mut">${esc(ST.emptyWords(node.mempool, { following: state.following, notStarted: state.notStarted }) ?? 'empty')}</td></tr>`;
     return;
   }
   // what is no longer listed goes first (but not a row holding the focus), so the walk moves only what is out of order
@@ -1046,7 +1079,7 @@ function drawGraph() {
     (gaps ? ` · ${FM.pl(gaps, 'gap')} where this tab was in the background or asleep and not sampling` : '');
   c.setAttribute(
     'aria-label',
-    `Mempool over ${SR.spanWords(s)}: now ${FM.pl(s.at(-1).count, 'transaction')} and ${n(s.at(-1).vb)} vB; at most ${n(maxN)} and ${n(maxVb)}`,
+    `Mempool over ${SR.spanWords(s)}: now ${FM.pl(s.at(-1).count, 'transaction')} and ${n(s.at(-1).vb)} vB; at most ${FM.pl(maxN, 'transaction')} and ${n(maxVb)} vB`,
   );
 }
 
@@ -1103,6 +1136,7 @@ function askSearch(h, { keepOpen = false } = {}) {
   const timer = setTimeout(() => {
     if (state.pendingSearch?.height !== h) return;
     state.pendingSearch = null;
+    if (state.openFound === h) state.openFound = null;
     openDetail(
       `<h2 id="dtitle">Block ${esc(n(h))}</h2><p class="mut">the node did not answer in 15 seconds; search again to retry</p>`,
       { kind: 'q' },
@@ -1214,7 +1248,10 @@ $('o-wipe').onclick = () => {
         $('o-wipenote').textContent = 'not wiped: ' + (e?.message || e);
         // the loader stops the node for a wipe; one that failed may have left none running (phase 'error'): the pill and
         // the notices say so rather than "up to date" over a stopped node
-        if (node.phase === 'error' || node.phase === 'wiped') state.running = false;
+        if (node.phase === 'error' || node.phase === 'wiped') {
+          state.running = false;
+          markStopped();
+        }
         pill();
       },
     );
@@ -1431,6 +1468,7 @@ async function welcome(force = false) {
     $('welcome').close();
     state.notStarted = true;
     pill();
+    scheduleRender();
     $('syncmsg').textContent = 'not started: nothing is downloaded until you choose Start';
     banner('welcome', 'info', 'The node is not started. Nothing is downloaded until you start it.', [
       ['Start the node…', () => $('welcome').showModal()],

@@ -758,8 +758,10 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
   await until(a, () => !!document.querySelector('#mined [data-k=h152110]'));
   const tile = (h) => text(a, `#mined [data-k=h${h}]`);
   t(
-    'a block applied while asleep is not counted though it came alone (the sync sees the gap first); counting resumes after',
-    /not listening then/.test(await tile(152107)) && /not listening then/.test(await tile(152108)) && /seen first/.test(await tile(152109)),
+    'a block applied while asleep is not counted though it came alone (the sync sees the gap first); the next, watched arriving, heard only part of its interval; counting resumes after',
+    /not listening then/.test(await tile(152107)) &&
+      /listening for only part of its interval/.test(await tile(152108)) &&
+      /seen first/.test(await tile(152109)),
     [await tile(152107), await tile(152108), await tile(152109)].join(' | '),
   );
   t(
@@ -1341,7 +1343,209 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
     'after "Not now" the pill says not started, not "starting"',
     await until(a, () => document.getElementById('pilltxt').textContent === 'not started'),
   );
+  t(
+    'after "Not now" the next-block tile says the node is not started, not that following waits on being up to date',
+    await until(a, () => /not started: start the node/.test(document.getElementById('proj').textContent)),
+    await text(a, '#proj'),
+  );
   await p.ctx.close();
+}
+// 19: round 6. A reorganisation over an open searched block; two searches of one height told apart by req; every request
+// asked again at once on a new generation; the first message after a clock jump being the mempool's; no template from an
+// idle or wiped tab; a template build that throws said as the build failing; a stopped node greyed with its time; a
+// block's detail scrolling in its own box on a phone
+{
+  const hx = (h, c = '0') => c + h.toString(16).padStart(63, '0');
+  const blk = (h, c = '0', k = 1) => ({
+    height: h,
+    hash: hx(h, c),
+    previousblockhash: hx(h - 1, c),
+    size: 400,
+    nTx: k,
+    header: { time: Math.floor(Date.now() / 1000) - 60 },
+    txids: Array.from({ length: k }, (_, i) => id('7', i)),
+  });
+  const searchReqs = (page, h) =>
+    page.evaluate(
+      (h) => window.__fake.posts.filter((m) => m.type === 'block' && m.height === h && /^bight:s/.test(m.req)).map((m) => m.req),
+      h,
+    );
+  {
+    const p = await profile({ 'reef:started': '1' });
+    const a = await p.open();
+    await until(a, () => window.__fake.starts === 1);
+    const H = 152400;
+    await emit(a, 'mempool', mp([]));
+    await emit(a, 'synced', { height: H, hash: hx(H), applied: 1792 });
+    await until(a, () => window.__fake.posts.filter((m) => m.type === 'block').length >= 8);
+    const first = await a.evaluate(() => window.__fake.posts.filter((m) => m.type === 'block').map((m) => [m.height, m.req]));
+    // a reorganisation of the tip before any tile was answered: the replies to the old generation are ignored, and every
+    // tile height is asked again at once
+    await emit(a, 'synced', { height: H, hash: hx(H, 'e'), applied: 1 });
+    for (const [h, req] of first) await emit(a, 'block', { ...blk(h), req });
+    const again = await until(
+      a,
+      (old) => {
+        const now = window.__fake.posts.filter((m) => m.type === 'block' && !/^bight:s/.test(m.req) && m.req !== old);
+        return new Set(now.map((m) => m.height)).size >= 8;
+      },
+      first[0][1],
+      3000,
+    );
+    t('a new generation asks every tile height again at once, not after the 30 s retry', again);
+    // a searched block, open; a reorganisation over it: said, asked again, the new block shown
+    const S = H - 20;
+    await a.fill('#q', String(S));
+    await a.press('#q', 'Enter');
+    await until(a, (h) => window.__fake.posts.some((m) => m.type === 'block' && m.height === h && /^bight:s/.test(m.req)), S);
+    const [r1] = await searchReqs(a, S);
+    await emit(a, 'block', { ...blk(S, 'a'), req: r1 });
+    t('a searched block is shown', await until(a, (x) => document.getElementById('detail').textContent.includes(x), hx(S, 'a')));
+    await emit(a, 'synced', { height: H, hash: hx(H, 'f'), applied: 25 });
+    t(
+      'a reorganisation over the open searched block says so',
+      await until(a, () => /replaced by a reorganisation/.test(document.getElementById('detail').textContent)),
+      await text(a, '#detail'),
+    );
+    const askedAgain = await until(
+      a,
+      ([h, n]) => window.__fake.posts.filter((m) => m.type === 'block' && m.height === h && /^bight:s/.test(m.req)).length > n,
+      [S, 1],
+    );
+    const r2 = (await searchReqs(a, S)).at(-1);
+    t('…and asks for it again under the new generation', askedAgain && r2 !== r1, `${r1} ${r2}`);
+    await emit(a, 'block', { ...blk(S, 'b'), req: r2 });
+    t(
+      '…and shows the block now at that height',
+      await until(a, (x) => document.getElementById('detail').textContent.includes(x), hx(S, 'b')),
+      await text(a, '#detail'),
+    );
+    // two searches of the same height: only the reply to the one still waiting answers it
+    const S2 = H - 30;
+    await a.fill('#q', String(S2));
+    await a.press('#q', 'Enter');
+    await until(a, (h) => window.__fake.posts.some((m) => m.type === 'block' && m.height === h && /^bight:s/.test(m.req)), S2);
+    await a.fill('#q', String(S2));
+    await a.press('#q', 'Enter');
+    await until(
+      a,
+      (h) => window.__fake.posts.filter((m) => m.type === 'block' && m.height === h && /^bight:s/.test(m.req)).length >= 2,
+      S2,
+    );
+    const [q1, q2] = await searchReqs(a, S2);
+    await emit(a, 'block', { ...blk(S2, 'c'), req: q1 });
+    await a.waitForTimeout(200);
+    await emit(a, 'block', { ...blk(S2, 'd'), req: q2 });
+    await until(a, (x) => document.getElementById('detail').textContent.includes(x), hx(S2, 'd'));
+    const dt = await text(a, '#detail');
+    t(
+      'two searches of one height: the reply to the earlier one is not taken for the later one',
+      dt.includes(hx(S2, 'd')) && !dt.includes(hx(S2, 'c')),
+      dt.slice(0, 200),
+    );
+    // a template build that throws: an error echoing the template's req, said as the build failing, not as the node failing
+    await emit(a, 'mempool', mp([mtx('8', 1, 3), mtx('8', 2, 4)]));
+    await emit(a, 'error', { text: 'not enough header context for the difficulty', req: 'bight:t' });
+    t(
+      'a template build that throws is said on the next block as "build fails", and not as a node error',
+      (await until(a, () => /build fails/.test(document.getElementById('proj').textContent))) && !(await a.$('#banners [data-b=nodeerr]')),
+      await text(a, '#proj'),
+    );
+    t(
+      'the template is asked with its own req',
+      await a.evaluate(() => window.__fake.posts.some((m) => m.type === 'template' && m.req === 'bight:t')),
+    );
+    // a block's detail on a phone: its table scrolls in its own box, the page does not
+    await a.setViewportSize({ width: 390, height: 800 });
+    const S3 = H - 3;
+    await emit(a, 'block', { ...blk(S3, '0', 30), req: await reqFor(a, S3) });
+    await until(a, (h) => !!document.querySelector(`#mined [data-k=h${h}]`), S3);
+    await a.click(`#mined [data-k=h${S3}]`);
+    await until(a, () => !!document.querySelector('#detail .dtbl'));
+    const w = await a.evaluate(() => [document.documentElement.scrollWidth, innerWidth]);
+    t('a block detail on a 390 px phone scrolls in its own box: the page is not wider than the screen', w[0] <= w[1], JSON.stringify(w));
+    t(
+      'the fixed status bar is kept clear of what has the focus (scroll padding)',
+      (await a.evaluate(() => getComputedStyle(document.documentElement).scrollPaddingBottom)) === '48px',
+    );
+    // a stopped node: greyed, with the time it stopped
+    await emit(a, 'error', { text: 'the node did not wipe in time and is stopped', fatal: true });
+    t(
+      'a stopped node greys what is on screen and says the time it stopped',
+      (await until(a, () => document.querySelector('main').classList.contains('stopped'))) &&
+        /Stopped at .*not live/.test(await text(a, '#stopnote')) &&
+        /as of/.test(await text(a, '#mp-h')),
+      await text(a, '#stopnote'),
+    );
+    t('no page errors (round 6)', !p.errors.length, p.errors.join(' | '));
+    await p.ctx.close();
+  }
+  // the first message after a clock jump is the mempool's: the block the next sync applies is still a catch-up
+  {
+    const p = await profile({ 'reef:started': '1' });
+    const a = await p.open();
+    await until(a, () => window.__fake.starts === 1);
+    const T0 = Date.UTC(2026, 9, 1, 12);
+    const at = (ms) => a.clock.setFixedTime(T0 + ms);
+    const tile = (h) => text(a, `#mined [data-k=h${h}]`);
+    const blkT = (h) => ({ ...blk(h), header: { time: Math.floor(T0 / 1000) - 3600 } });
+    const sync1 = async (h) => {
+      await emit(a, 'synced', { height: h, hash: hx(h), applied: 1 });
+      await until(a, (h) => window.__fake.posts.some((m) => m.type === 'block' && m.height === h), h);
+      await reply(a, blkT(h));
+      await until(a, (h) => !!document.querySelector(`#mined [data-k=h${h}]`), h);
+    };
+    await at(0);
+    await sync1(152500);
+    await at(1000);
+    await emit(a, 'mempool', mp([], { feedFileAt: T0 }));
+    await at(2000);
+    await sync1(152501);
+    t('watched arriving before the jump', !/header/.test(await tile(152501)), await tile(152501));
+    await at(182000);
+    await emit(a, 'mempool', mp([], { feedFileAt: T0 }));
+    await sync1(152502);
+    t(
+      'after a clock jump first seen by a mempool message, the next sync’s block is a catch-up',
+      /header/.test(await tile(152502)),
+      await tile(152502),
+    );
+    await p.ctx.close();
+  }
+  // no template from an idle tab (another runs the node) or from a wiped one
+  {
+    const p = await profile({ 'reef:started': '1' });
+    const a = await p.open();
+    await until(a, () => window.__fake.starts === 1);
+    const b = await p.open();
+    await until(
+      b,
+      () => document.body.classList.contains('idle') || /idle/.test(document.getElementById('pilltxt').textContent),
+      null,
+      8000,
+    );
+    await emit(b, 'synced', { height: 152600, hash: hx(152600), applied: 1 });
+    await emit(b, 'mempool', mp([mtx('9', 1, 3)]));
+    await b.waitForTimeout(2600);
+    t('an idle tab asks no template', !(await b.evaluate(() => window.__fake.posts.some((m) => m.type === 'template'))));
+    await p.ctx.close();
+  }
+  {
+    const p = await profile({ 'reef:started': '1' }, { config: { wipeLeaves: ['blocks.dat'] } });
+    const a = await p.open();
+    await until(a, () => window.__fake.starts === 1);
+    await emit(a, 'synced', { height: 152700, hash: hx(152700), applied: 1 });
+    await a.click('#settings');
+    await a.click('#o-wipe');
+    await a.click('#o-wipe');
+    await until(a, () => window.__fake.wipes === 1);
+    const before = await a.evaluate(() => window.__fake.posts.filter((m) => m.type === 'template').length);
+    await emit(a, 'mempool', mp([mtx('9', 2, 3)]));
+    await emit(a, 'synced', { height: 152701, hash: hx(152701), applied: 1 });
+    await a.waitForTimeout(2600);
+    t('a wiped tab asks no template', (await a.evaluate(() => window.__fake.posts.filter((m) => m.type === 'template').length)) === before);
+    await p.ctx.close();
+  }
 }
 await browser.close();
 console.log(`\n${ok} passed, ${bad} failed`);

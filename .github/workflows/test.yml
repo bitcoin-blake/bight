@@ -1,28 +1,42 @@
 # Runs the page's decisions and the release checks (the version, the security policy against the node pin, the node's
 # messages at the pin, read from bight.js), the page itself in headless Chromium with a fake node (test/smoke.mjs), the
 # formatting, and that a code change bumped the version.
-# Only a green run on main is deployed to GitHub Pages (the deploy job); after it, the published apps' node pins are compared.
-# That comparison does not fail a release (the apps are released one after another, siblings first, so a pin bump is mixed
-# for a few minutes by design): it warns, and the scheduled run, which only compares, fails while they still differ, and
-# then opens (or adds to) an issue in this repository, closed again by the first scheduled run that passes.
+# Only a green run on main is deployed to GitHub Pages (the deploy job). After it, the deployed version.json must name this
+# commit (the served job, which fails the run if it is not served within five minutes); then the published apps' node pins
+# are compared. That comparison does not fail a release (the apps are released one after another, siblings first, so a pin
+# bump is mixed for a few minutes by design): it warns. The pins-only run (hourly, or dispatched with pins_only) only
+# compares, fails while the pins differ, and opens an issue in this repository (one, its body updated while it goes on),
+# closed by the first pins-only run that passes. A fetch that fails (Pages or raw content down) is said as that, and opens
+# no issue. Dispatched with simulate=mismatch, a pins-only run pretends one app differs: the way to prove the issue path.
 name: test
 on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      pins_only:
+        description: only compare the published apps' node pins (as the hourly run does)
+        type: boolean
+        default: false
+      simulate:
+        description: with pins_only, pretend one app pins another node (proves the issue path)
+        type: choice
+        options: [none, mismatch]
+        default: none
   schedule:
     - cron: '47 * * * *'
 permissions:
   contents: read
 concurrency:
-  # the hourly comparison in a group of its own: in the deploy's group it could take the place of a push run still
+  # the pins-only comparison in a group of its own: in the deploy's group it could take the place of a push run still
   # waiting there, and that push would never be deployed
-  group: ${{ github.event_name == 'schedule' && 'pins-hourly' || format('pages-{0}', github.ref) }}
+  group: ${{ (github.event_name == 'schedule' || inputs.pins_only) && 'pins-hourly' || format('pages-{0}', github.ref) }}
   cancel-in-progress: false
 jobs:
   test:
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.pins_only
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
         with: { fetch-depth: 0 }
@@ -53,12 +67,13 @@ jobs:
         # the four apps share this origin's node files: a node that writes another layout than the others read would make
         # them refuse the files (or need a wipe), so that is an error; another pin with the same layout is a warning
         run: |
+          set -o pipefail
           mine=$(grep -o 'blaketestnode@[0-9a-f]\{40\}' bight.js | head -1 | cut -d@ -f2)
-          layout() { curl -fsSL "https://raw.githubusercontent.com/bitcoin-blake/blaketestnode/$1/browser/worker.js" | grep -o '^const LAYOUT = [0-9]*' | grep -o '[0-9]*$'; }
+          layout() { curl -fsSL --retry 3 --retry-all-errors "https://raw.githubusercontent.com/bitcoin-blake/blaketestnode/$1/browser/worker.js" | grep -o '^const LAYOUT = [0-9]*' | grep -o '[0-9]*$'; }
           want=$(layout "$mine")
           [ -n "$want" ] || { echo "::error::no LAYOUT in the node at $mine"; exit 1; }
           for app in reef winch hitch; do
-            p=$(curl -fsSL "https://raw.githubusercontent.com/bitcoin-blake/$app/main/$app.js" | grep -o 'blaketestnode@[0-9a-f]\{40\}' | sort -u | cut -d@ -f2)
+            p=$(curl -fsSL --retry 3 --retry-all-errors "https://raw.githubusercontent.com/bitcoin-blake/$app/main/$app.js" | grep -o 'blaketestnode@[0-9a-f]\{40\}' | sort -u | cut -d@ -f2)
             [ "$(echo "$p" | grep -c .)" = 1 ] || { echo "::error::$app on main pins more or fewer than one node version"; exit 1; }
             [ "$p" = "$mine" ] && { echo "$app: $p (the same)"; continue; }
             l=$(layout "$p")
@@ -80,8 +95,9 @@ jobs:
           BLAKETESTNODE: ${{ github.workspace }}/deps/blaketestnode
   deploy:
     needs: test
-    if: github.event_name != 'pull_request' && github.event_name != 'schedule' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && github.event_name != 'schedule' && !inputs.pins_only && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: read
       pages: write
@@ -97,53 +113,85 @@ jobs:
         with: { path: _site }
       - id: d
         uses: actions/deploy-pages@v5
-  pins:
+  # the deploy is served: the published version.json names this commit (a push that does not bump the version, a README
+  # or CI change, would match the old deploy's version at once). Not served within five minutes fails the run.
+  served:
     needs: deploy
-    if: always() && (github.event_name == 'schedule' || needs.deploy.result == 'success')
-    continue-on-error: ${{ github.event_name != 'schedule' }}
+    if: needs.deploy.result == 'success'
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
-      - name: the four published apps pin the same node (after a deploy, polled until it is served)
+      - name: the deployed version.json names this commit
         run: |
-          want=$(node -pe 'require("./version.json").version')
-          [ "${{ github.event_name }}" = schedule ] || for i in $(seq 1 30); do
-            got=$(curl -fsSL "https://bitcoin-blake.github.io/bight/version.json?nocache=$RANDOM" | node -pe 'JSON.parse(require("fs").readFileSync(0)).version' || true)
-            [ "$got" = "$want" ] && break; sleep 10
+          for i in $(seq 1 30); do
+            got=$(curl -fsSL --retry 3 --retry-all-errors "https://bitcoin-blake.github.io/bight/version.json?nocache=$RANDOM" | node -pe 'JSON.parse(require("fs").readFileSync(0)).commit ?? ""' || true)
+            [ "$got" = "${{ github.sha }}" ] && { echo "served: $got"; exit 0; }
+            sleep 10
           done
-          if [ "${{ github.event_name }}" != schedule ] && [ "$got" != "$want" ]; then echo "::error::the deployed version.json is $got, not $want, after five minutes"; exit 1; fi
+          echo "::error::the deployed version.json names commit '$got', not ${{ github.sha }}, after five minutes"; exit 1
+  pins:
+    needs: served
+    if: always() && (github.event_name == 'schedule' || inputs.pins_only || needs.served.result == 'success')
+    # after a deploy a mismatch is expected for a few minutes (a warning, never a red run); pins-only, it is the result
+    continue-on-error: ${{ github.event_name != 'schedule' && !inputs.pins_only }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      result: ${{ steps.cmp.outputs.result }}
+    steps:
+      - name: the four published apps pin the same node
+        id: cmp
+        env:
+          PINS_ONLY: ${{ github.event_name == 'schedule' || inputs.pins_only }}
+          SIMULATE: ${{ inputs.pins_only && inputs.simulate || 'none' }}
+        run: |
+          set -o pipefail
           declare -A pin
           for f in reef/reef.js bight/bight.js winch/winch.js hitch/hitch.js; do
-            p=$(curl -fsSL "https://bitcoin-blake.github.io/$f?nocache=$RANDOM" | grep -o 'blaketestnode@[0-9a-f]\{40\}' | sort -u)
+            if ! src=$(curl -fsSL --retry 3 --retry-all-errors "https://bitcoin-blake.github.io/$f?nocache=$RANDOM"); then
+              echo "result=fetch-failed" >> "$GITHUB_OUTPUT"
+              echo "::error::could not fetch $f (GitHub Pages down?): nothing compared"; exit 1
+            fi
+            p=$(printf '%s' "$src" | grep -o 'blaketestnode@[0-9a-f]\{40\}' | sort -u || true)
+            # a test of the issue path only: one app pretends to pin another node
+            [ "$SIMULATE" = mismatch ] && [ "$f" = hitch/hitch.js ] && p="blaketestnode@$(printf '0%.0s' $(seq 1 40))"
             echo "$f: $p"; pin[$f]=$p
-            if [ "$(echo "$p" | grep -c .)" != 1 ]; then echo "::error::$f pins more or fewer than one node version"; exit 1; fi
+            if [ "$(echo "$p" | grep -c .)" != 1 ]; then echo "result=differ" >> "$GITHUB_OUTPUT"; echo "::error::$f pins more or fewer than one node version"; exit 1; fi
           done
           if [ "$(printf '%s\n' "${pin[@]}" | sort -u | wc -l)" != 1 ]; then
-            # after a deploy the apps are mixed for a few minutes by design (siblings first): a warning; hourly, an error
-            if [ "${{ github.event_name }}" = schedule ]; then echo "::error::the apps pin different node versions"; exit 1; fi
+            echo "result=differ" >> "$GITHUB_OUTPUT"
+            if [ "$PINS_ONLY" = true ]; then echo "::error::the apps pin different node versions"; exit 1; fi
             echo "::warning::the apps pin different node versions (expected for a few minutes while they are released one after another)"
+            exit 0
           fi
-  # the hourly comparison failed: an issue says so (one, added to while it goes on); the first one that passes closes it
+          echo "result=same" >> "$GITHUB_OUTPUT"
+  # a pins-only comparison that differed: an issue says so (one, its body updated while it goes on, not a comment an hour);
+  # the first one that passes closes it. A fetch that failed opens nothing (it says nothing about the pins).
   alert:
     needs: pins
-    if: always() && github.event_name == 'schedule' && (needs.pins.result == 'failure' || needs.pins.result == 'success')
+    if: always() && (github.event_name == 'schedule' || inputs.pins_only) && (needs.pins.outputs.result == 'differ' || needs.pins.outputs.result == 'same')
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       issues: write
     steps:
-      - name: open, add to or close the issue
+      - name: open, update or close the issue
         env:
           GH_TOKEN: ${{ github.token }}
-          RESULT: ${{ needs.pins.result }}
+          RESULT: ${{ needs.pins.outputs.result }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           title='The four apps pin different node versions (hourly check)'
           n=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search "in:title \"$title\"" --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -1)
-          if [ "$RESULT" = success ]; then
+          body="The comparison of the published apps' node pins failed. Release the apps that are behind (README, Releasing)."
+          if [ "$RESULT" = same ]; then
             [ -z "$n" ] || gh issue close "$n" -R "$GITHUB_REPOSITORY" --comment "The apps pin the same node again: $RUN"
           elif [ -n "$n" ]; then
-            gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "Still differing: $RUN"
-          else
-            gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --body "The hourly comparison of the published apps' node pins failed: $RUN. Release the apps that are behind (README, Releasing)."
-          fi
+            gh issue edit "$n" -R "$GITHUB_REPOSITORY" --body "$body
 
+          Last seen differing: $RUN ($(date -u +%Y-%m-%dT%H:%MZ))"
+          else
+            gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --body "$body
+
+          First seen: $RUN"
+          fi
