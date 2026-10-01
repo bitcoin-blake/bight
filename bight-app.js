@@ -1,7 +1,8 @@
-// Bight as a solid-apps registry App (hub-pod app interface): meta + render. The node runs inside the page in an
-// iframe, so its storage (the snapshot in OPFS) belongs to Reef's own origin and one copy serves every host.
+// Bight as a solid-apps registry App (hub-pod app interface): meta + render. The node runs inside the page in an iframe.
+// Its storage (the snapshot in OPFS, the node lock) belongs to bitcoin-blake.github.io as embedded in the host: browsers that
+// partition storage by top-level site give a host on another site its own copy (a second 830 MB download) and its own lock.
 export const meta = {
-  id: 'https://bitcoin-blake.github.io/reef/bight-app.js',
+  id: 'https://bitcoin-blake.github.io/bight/bight-app.js',
   name: 'Bight',
   icon: '🌊',
   description:
@@ -10,19 +11,14 @@ export const meta = {
 export function render(container, ctx = {}) {
   container.innerHTML = '';
   const f = document.createElement('iframe');
-  f.src = 'https://bitcoin-blake.github.io/bight/?embedded=1' + (ctx.params ? '&' + new URLSearchParams(ctx.params) : '');
+  // only the page's own options travel: the sources (snapshot, blocks) are never set by a host
+  const params = new URLSearchParams(ctx.params ?? {});
+  params.delete('snapshot');
+  params.delete('blocks');
+  f.src = 'https://bitcoin-blake.github.io/bight/?embedded=1' + (params.size ? '&' + params : '');
   f.title = 'Bight';
-  f.allow = 'clipboard-write';
-  f.style.cssText = 'width:100%;height:100%;min-height:640px;border:0;background:#d9dde3';
+  f.style.cssText = 'width:100%;height:100%;min-height:640px;border:0;background:#0d0f1a';
   container.appendChild(f);
-  // File → Exit inside the pane asks the host to minimize it; a host with a dock can act on this, others ignore it
-  const onMsg = (e) => {
-    if (e.source === f.contentWindow && e.data?.source === 'reef' && e.data.type === 'minimize') ctx.minimize?.();
-  };
-  addEventListener('message', onMsg);
-  return () => {
-    removeEventListener('message', onMsg);
-    f.remove();
-  };
+  return () => f.remove();
 }
 export default { meta, render };

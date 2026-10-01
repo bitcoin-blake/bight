@@ -1,0 +1,10 @@
+{
+  "name": "bight",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "scripts": {
+    "test": "node --input-type=module --check < bight.js && node test/lib-test.mjs && node test/release-test.mjs",
+    "smoke": "node test/smoke.mjs"
+  }
+}
