@@ -5,9 +5,9 @@
 // The decisions (packing, bands, what was seen first, the chain cache, search, the status words, the sources, the
 // settings, the markup of tiles and details) are lib/*.mjs, tested; this file wires them to the document, patching in
 // place so a focused or selected element survives the next update.
-export const VERSION = '2026-10-01.8';
+export const VERSION = '2026-10-01.9';
 const $ = (id) => document.getElementById(id);
-const NODE = 'https://cdn.jsdelivr.net/gh/bitcoin-blake/blaketestnode@3037bb4c7ea414e75332632677ac2ffee191b704';
+const NODE = 'https://cdn.jsdelivr.net/gh/bitcoin-blake/blaketestnode@b54e498a5603771586dc8d9dcb963223014dfd8a';
 const RELAYS = [
   'wss://relay.primal.net',
   'wss://nostr.oxtr.dev',
