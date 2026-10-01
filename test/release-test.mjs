@@ -10,12 +10,14 @@ import * as NT from '../lib/node-text.mjs';
 import * as P from '../lib/pack.mjs';
 import * as ST from '../lib/status.mjs';
 import * as SO from '../lib/sources.mjs';
+import * as FM from '../lib/fmt.mjs';
 const rd = (f) => readFileSync(new URL('../' + f, import.meta.url), 'utf8');
 const src = rd('bight.js'),
   html = rd('index.html');
 const v = src.match(/export const VERSION = '([^']+)'/)?.[1];
 t('bight.js VERSION matches version.json', v && v === JSON.parse(rd('version.json')).version);
 t('index.html loads bight.js?v= the same version', html.includes(`bight.js?v=${v}"`));
+t('index.html loads theme.js?v= the same version', html.includes(`theme.js?v=${v}"`));
 const node = src.match(/blaketestnode@([0-9a-f]{40})/)?.[1];
 const csp = html.match(/Content-Security-Policy" content="([^"]+)"/)?.[1] ?? '';
 // the policy, directive by directive, read exactly: a name that merely contains another is not that name
@@ -139,6 +141,15 @@ t(
     tabnode,
   ),
 );
+// every field the page reads of a block reply (blockOf in bight.js, and req) is one the node's reply has
+const blockOfSrc = src.match(/const blockOf = \(m\) => \(\{([\s\S]*?)\n\}\);/)?.[1] ?? '';
+const reads = [...new Set([...blockOfSrc.matchAll(/\bm\.([a-zA-Z]+)/g)].map((x) => x[1]))];
+const sent = new Set([...blockPost.matchAll(/[{,]\s*([a-zA-Z]+)(?=[,:} ])/g)].map((x) => x[1]));
+t(
+  'every field the page reads of a block reply (blockOf) is one the node at the pin sends, the coinbase’s value among them',
+  reads.length >= 8 && reads.includes('coinbaseValue') && reads.every((f) => sent.has(f)),
+  `reads ${reads.join(',')}; missing ${reads.filter((f) => !sent.has(f)).join(',')}`,
+);
 t(
   'a block request is answered by height, with the request’s req echoed (the page’s generation)',
   /Number\(m\.height\)/.test(worker) && blockPost.includes('req: m.req ?? null'),
@@ -231,7 +242,7 @@ t(
   'the welcome’s figures before the page fills them are the pinned snapshot’s: its height and its size',
   !!base &&
     welcome.includes(`<span id="wl-base">${base.toLocaleString('en-US')}</span>`) &&
-    welcome.includes(`<b id="wl-size">${Math.round(bytes / 2 ** 20)} MB</b>`),
+    welcome.includes(`<b id="wl-size">${FM.fmtGB(bytes)}</b>`),
   `${base} ${bytes} · ${welcome.slice(0, 160)}`,
 );
 t(

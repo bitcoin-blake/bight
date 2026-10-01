@@ -427,7 +427,7 @@ t(
   t(
     'errors in words',
     /another tab/i.test(ST.plainError('blocks.dat is open in another tab @ x')) &&
-      /1.1 GB/.test(ST.plainError('QuotaExceededError')) &&
+      /1.2 GB/.test(ST.plainError('QuotaExceededError')) &&
       /private window/.test(ST.plainError('SecurityError')) &&
       /not the pinned code/.test(ST.plainError("the node's browser/worker.js from x is not the pinned file")) &&
       /context headers/.test(ST.plainError('context headers do not link')) &&
@@ -673,8 +673,10 @@ t(
   );
   const m = V.minedTile({ height: 152103, size: 617, nTx: 2 }, { med: 5, known: 1, others: 3, seenWords: '1 of 3 seen first', ageS: 240 });
   t(
-    'a mined tile names its block, age, rate (of how many known), size and seen',
-    /block 152,103, 4 min ago: ~5.0 sat\/vB \(of 1 known\), 2 transactions, 617 bytes, 1 of 3 seen first/.test(m.label),
+    'a mined tile names its block, age, rate in words (of how many known), size and seen; the symbols only on screen',
+    /block 152,103, 4 min ago: about 5\.0 sat per vB \(of 1 known\), 2 transactions, 617 bytes, 1 of 3 seen first/.test(m.label) &&
+      !/~|\//.test(m.label) &&
+      /~5\.0 sat\/vB/.test(m.html),
     m.label,
   );
   t(
@@ -684,8 +686,9 @@ t(
   );
   const seenTx = new Map([[id('b'), { vsize: 10, fee: 20, feeRate: 2, at: 50 }]]);
   const det = V.blockDetail(
-    { height: 7, hash: id('h'), time: 100, nTx: 3, size: 900, txids: [id('c'), id('b'), id('d')], arrivedAt: 100 },
+    { height: 7, hash: id('h'), time: 100, nTx: 3, size: 900, txids: [id('c'), id('b'), id('d')] },
     {
+      arrival: { at: 100000, alone: true },
       sw: { counted: false, words: 'not listening then', seen: 1, others: 2, knownCount: 1, knownFees: 20 },
       seenTx,
       signedWords: 'x',
@@ -747,8 +750,11 @@ t(
   );
   const early = NT.templateWords(m, 100, id('p'), { count: 3, block: blk });
   t(
-    'a build that saw another count than the page shows: "built on an earlier mempool", never "✓ built"',
-    !early.ok && early.earlier && /^built on an earlier mempool \(2 tx then\)/.test(early.text) && !/✓/.test(early.text),
+    'a build that saw another count than the page shows: "built on a different mempool" with both counts, never "✓ built"',
+    !early.ok &&
+      early.otherMempool &&
+      /^built on a different mempool \(2 tx in the node's, \d+ here\)/.test(early.text) &&
+      !/✓/.test(early.text),
   );
   const diff = NT.templateWords({ ...m, fees: 1500 }, 100, id('p'), { count: 2, block: blk });
   t('the same count but other figures: the node’s build differs, not built', !diff.ok && diff.differs && /differs/.test(diff.text));
@@ -850,8 +856,8 @@ t(
     ST.plainError('NoModificationAllowedError: x').startsWith('Another tab') &&
       ST.plainError('InvalidStateError').startsWith('Another tab') &&
       ST.plainError('could not create access handle').startsWith('Another tab') &&
-      /1.1 GB/.test(ST.plainError('not enough space')) &&
-      /1.1 GB/.test(ST.plainError('quota reached')),
+      /1.2 GB/.test(ST.plainError('not enough space')) &&
+      /1.2 GB/.test(ST.plainError('quota reached')),
   );
 }
 {
@@ -889,9 +895,11 @@ t(
       FM.pl(2, 'block') === '2 blocks' &&
       FM.pl(1000, 'transaction') === '1,000 transactions' &&
       FM.pl(0, 'gap') === '0 gaps' &&
-      FM.fmtMiB(1000) === '< 0.1 MiB' &&
-      FM.fmtMiB(0) === '0.0 MiB' &&
-      FM.fmtMiB(2 * 1048576) === '2.0 MiB',
+      FM.fmtGB(1000) === '< 1 MB' &&
+      FM.fmtGB(0) === '0 MB' &&
+      FM.fmtGB(869836053) === '870 MB' &&
+      FM.fmtGB(1.2e9) === '1.2 GB' &&
+      FM.fmtGB(10737418240) === '10.7 GB',
   );
   const list = Array.from({ length: 10 }, (_, i) => tx('r' + i, 50000, 10 - i));
   const blocks = P.packBlocks(list, { maxBlocks: 2 });
@@ -945,7 +953,7 @@ t(
   t('a projected tile shows the median by size, not by count', /~2\.0 sat\/vB/.test(V.projTile(b, 0).html) && b.med === 10);
   t(
     'a projected tile carries a word on the node’s build when it is not built',
-    /built on an earlier mempool/.test(V.projTile(b, 0, { note: 'built on an earlier mempool' }).label),
+    /built on a different mempool/.test(V.projTile(b, 0, { note: 'built on a different mempool' }).label),
   );
   const rt = V.remainderTile({ count: 40, vb: 450000, blocks: 3 });
   t('the remainder: "+3 blocks", its vB and transactions', /\+3 blocks/.test(rt.html) && /450,000 vB · 40 tx/.test(rt.html));
@@ -959,8 +967,14 @@ t(
   );
   const sw = { counted: true, words: '', seen: 0, others: 2, knownCount: 0, knownFees: 0 };
   const bd = V.blockDetail(
-    { height: 9, hash: id('h'), time: 100, nTx: 3, size: 900, txids: [id('c'), id('x'), id('y')], arrivedAt: 200000 },
-    { sw, seenTx: new Map([[id('x'), { vsize: 1, fee: 1, feeRate: 1, at: 140 }]]), signedWords: 's', inMempool: 2 },
+    { height: 9, hash: id('h'), time: 100, nTx: 3, size: 900, txids: [id('c'), id('x'), id('y')] },
+    {
+      sw,
+      seenTx: new Map([[id('x'), { vsize: 1, fee: 1, feeRate: 1, at: 140 }]]),
+      signedWords: 's',
+      inMempool: 2,
+      arrival: { at: 200000, alone: true },
+    },
   );
   t(
     'a block detail: when it reached this tab, the coinbase not marked unseen, two still listed, the note on history',
@@ -978,7 +992,7 @@ t(
   const X = '<img src=x onerror=alert(1)>"\'';
   const xtx = { txid: X, vsize: X, fee: X, feeRate: 1, at: 1, inputs: [X + ':0'], outputs: [{ value: X, scriptPubKey: X }] };
   const xb = { txs: [xtx], vsize: X, fees: X, min: 1, max: 2, wmed: 1 };
-  const xblock = { height: X, hash: X, time: 1, nTx: X, size: X, txids: [X, X], arrivedAt: 1, fees: X };
+  const xblock = { height: X, hash: X, time: 1, nTx: X, size: X, txids: [X, X], fees: X };
   const out = [
     V.projTile(xb, 0, { built: { txs: X }, note: X }),
     V.emptyNextTile({ words: X }),
@@ -991,6 +1005,7 @@ t(
         signedWords: X,
         inMempool: X,
         foundTxid: X,
+        arrival: { at: 1, alone: false },
       }),
     },
     { html: V.projDetail(xb, 0, { tw: { text: X, differs: true }, asOf: X }) },
@@ -1019,6 +1034,183 @@ t(
     'on the real clock: the first runs at once, a second waits its 50 ms, then runs',
     first === 1 && between === 1 && calls === 2,
     `${first} ${between} ${calls}`,
+  );
+}
+// ---- round 4: the coinbase's fees, arrivals watched or not, pruning, the spacing, search by digits, and the boundaries
+// that mutation testing showed untested
+{
+  t(
+    'the subsidy halves every 210,000 blocks from 50 BTC, as the engine counts it',
+    CH.subsidyAt(0) === 5e9 &&
+      CH.subsidyAt(209999) === 5e9 &&
+      CH.subsidyAt(210000) === 2.5e9 &&
+      CH.subsidyAt(152101) === 5e9 &&
+      CH.subsidyAt(64 * 210000) === 0,
+  );
+  t(
+    'the fees a coinbase claimed: its value less the subsidy; nothing from an older node or an impossible figure',
+    CH.feesClaimed(5e9 + 450, 152101) === 450 &&
+      CH.feesClaimed(5e9, 152101) === 0 &&
+      CH.feesClaimed(undefined, 152101) === null &&
+      CH.feesClaimed(4e9, 152101) === null &&
+      CH.feesClaimed(2.5e9 + 7, 210000) === 7,
+  );
+  const ar = new Map();
+  CH.markArrived(ar, { height: 10, applied: 1 }, 1000, { watched: false });
+  CH.markArrived(ar, { height: 11, applied: 1 }, 2000);
+  t(
+    'a block that came alone after a gap was not watched arriving; the next one was',
+    ar.get(10).alone === false && ar.get(11).alone === true,
+  );
+  const pm = new Map([
+    [5, 1],
+    [6, 1],
+    [7, 1],
+  ]);
+  CH.pruneBelow(pm, 6);
+  t('pruning forgets the heights below the floor and keeps the floor', [...pm.keys()].join() === '6,7');
+  const hb = (h, time) => ({ height: h, time });
+  t(
+    'the spacing is the median gap between consecutive headers, in minutes; 20 with fewer than 3 gaps',
+    FM.spacingMin([hb(1, 0), hb(2, 600), hb(3, 1200), hb(4, 1800)]) === 10 &&
+      FM.spacingMin([hb(1, 0), hb(2, 600)]) === 20 &&
+      FM.spacingMin([hb(1, 0), hb(3, 600), hb(5, 1200)]) === 20 &&
+      FM.spacingMin([hb(1, 0), hb(2, 6), hb(3, 12), hb(4, 18)]) === 1 &&
+      FM.spacingMin([hb(1, 0), hb(2, 9000), hb(3, 18000), hb(4, 27000)]) === 60,
+  );
+  t(
+    'the ETA follows the spacing given',
+    FM.etaWords(2, 10) === 'in ~30 min' && FM.etaWords(2) === 'in ~60 min' && FM.etaWords(0, 10) === 'next block',
+  );
+  t(
+    'digits alone are a height only up to 7 and without a leading zero; grouping is in threes with one separator',
+    SC.parseQuery('00000000').prefix === '00000000' &&
+      SC.parseQuery('12345678').prefix === '12345678' &&
+      SC.parseQuery('152105').height === 152105 &&
+      SC.parseQuery('152 105').height === 152105 &&
+      SC.parseQuery('1,234,567').height === 1234567 &&
+      !!SC.parseQuery('152,10,5').error &&
+      !!SC.parseQuery('1_234,567').error &&
+      !!SC.parseQuery('0123').error &&
+      SC.parseQuery('0').height === 0,
+  );
+  // packing: the order is the node's, by fee rate, whatever order the mempool lists them in
+  const shuffled = [tx('l', 100, 1), tx('h', 100, 9), tx('m', 100, 5)];
+  t(
+    'packing sorts by fee rate itself (a mempool listed in another order)',
+    P.packBlocks(shuffled)[0]
+      .txs.map((x) => x.txid[0])
+      .join('') === 'hml',
+  );
+  t(
+    'the size-weighted median is where half the size is reached, not a third',
+    P.weightedMedian([tx('a', 100, 1), tx('b', 100, 2), tx('c', 100, 3)]) === 2,
+  );
+  t(
+    'a rate that is not a number does not count toward the median, whatever its size',
+    P.weightedMedian([{ txid: 'x', vsize: 1000, feeRate: NaN }, tx('b', 10, 5)]) === 5,
+  );
+  const rem = (vb) => P.remainder([{ txid: 'r', vsize: vb, fee: 1, feeRate: 1 }], []).blocks;
+  t(
+    '"+N blocks" counts 199,000 vB to a block (800,000 weight less 4,000, by 4)',
+    rem(170000) === 1 && rem(199000) === 1 && rem(199001) === 2,
+  );
+  // the colours
+  t(
+    'the hue runs from 210 at 1 sat/vB to 30 at 1,000, on a log scale',
+    F.feeHue(1) === 210 && F.feeHue(1000) === 30 && Math.round(F.feeHue(Math.sqrt(1000) * 1)) === 120 && F.feeHue(0.5) === 210,
+  );
+  const blue = F.feeColors(1);
+  t(
+    'a colour already readable is kept at 40% lightness, its second stop 12 points darker',
+    blue.c1 === 'hsl(210 65% 40%)' && blue.c2 === 'hsl(210 70% 28%)',
+    blue.c1 + ' ' + blue.c2,
+  );
+  // the graph's coordinates
+  const pl3 = SR.polyline(
+    [
+      { t: 1000, v: 0 },
+      { t: 1010, v: 5 },
+      { t: 1020, v: 10 },
+    ],
+    'v',
+    { W: 100, H: 100, pad: 0 },
+  );
+  t(
+    'graph points are spread over the width by time, and up the height by value',
+    JSON.stringify(pl3.runs[0]) ===
+      JSON.stringify([
+        [0, 100],
+        [50, 50],
+        [100, 0],
+      ]),
+    JSON.stringify(pl3.runs),
+  );
+  t(
+    'the span under a minute and at one minute reads "the last minute"',
+    SR.spanWords([{ t: 0 }, { t: 20000 }]) === 'the last minute' &&
+      SR.spanWords([{ t: 0 }, { t: 60000 }]) === 'the last minute' &&
+      SR.spanWords([{ t: 0 }, { t: 120000 }]) === 'the last 2 minutes',
+  );
+  // seen first: strictly after
+  const blk = { txids: [id('c'), id('b')], nTx: 2 };
+  const seenAt = (at, prevAt) =>
+    SE.blockSeen(blk, new Map(), { followedAt: 100, arrival: { at, alone: true }, prevArrival: { at: prevAt } }).counted;
+  t(
+    'a block that arrived at the very moment listening began is not counted; a moment later it is',
+    !seenAt(100, 101) && !seenAt(101, 100) && seenAt(101, 101),
+  );
+  // the status boundaries
+  const behind = (k) => ST.chainState({ height: 100, nostr: { height: 100 + k, agree: 1 } });
+  t(
+    'two blocks behind the signed tip is ordinary (it catches up); three is a warning',
+    behind(2).level === 'none' && /catches up/.test(behind(2).text) && behind(3).level === 'warn' && /may be stale/.test(behind(3).text),
+  );
+  t('a mempool of one transaction is not "empty"', ST.emptyWords({ count: 1, stats: { seen: 1 } }) === null);
+  t(
+    'a node stopped for a wipe, or left stopped by one, is said, never "up to date"',
+    ST.pillState({ phase: 'wiped', synced: true, height: 5 }).text === 'stopped for a wipe' &&
+      ST.pillState({ phase: 'error', synced: false, error: 'x' }).level === 'bad' &&
+      /stopped/.test(ST.pillState({ phase: 'error', synced: false, error: 'x' }).text),
+  );
+  // the views
+  const bd = V.blockDetail(
+    { height: 3, hash: id('h'), time: 100, nTx: 2, size: 9, txids: [id('c'), id('b')], fees: 450 },
+    {
+      sw: { counted: true, seen: 0, others: 1, knownCount: 0, knownFees: 0 },
+      seenTx: new Map(),
+      signedWords: 's',
+      arrival: { at: 200000, alone: false },
+    },
+  );
+  t(
+    'a block detail: the coinbase marked, the header time in seconds, a catch-up arrival said so, the fees its coinbase claimed',
+    /coinbase<\/span>/.test(bd) &&
+      bd.includes(new Date(100 * 1000).toLocaleString()) &&
+      /in a catch-up, not watched arriving/.test(bd) &&
+      /Fees claimed by its coinbase<\/span><span class="v">450 sat/.test(bd),
+  );
+  const seenTx2 = new Map([[id('b'), { vsize: 1, fee: 1, feeRate: 1, at: 40 }]]);
+  const at = (arrival) =>
+    V.blockDetail(
+      { height: 3, hash: id('h'), time: 100, nTx: 2, size: 9, txids: [id('c'), id('b')] },
+      { sw: { counted: true, seen: 1, others: 1, knownCount: 1, knownFees: 1 }, seenTx: seenTx2, signedWords: 's', arrival },
+    );
+  t(
+    '"before the block" counts from its arrival only when it was watched arriving; else from its header',
+    /2 min before the block/.test(at({ at: 160000, alone: true })) && /1 min before the block/.test(at({ at: 999000, alone: false })),
+  );
+  const pd = (i) =>
+    V.projDetail({ txs: [], vsize: 0, fees: 0, min: null, max: null, wmed: null }, i, { tw: { text: 'T', differs: false }, asOf: 'now' });
+  t('the node’s own build is a row of the next block only', /The node's own build/.test(pd(0)) && !/The node's own build/.test(pd(1)));
+  t(
+    'a height while the tab is not up to date says to search again later',
+    /not up to date yet/.test(V.notFoundWords({ where: 'none', height: 5 }, { range: 'unknown' })),
+  );
+  const heard = V.mempoolTxDetail({ txid: id('a'), vsize: 1, fee: 1, feeRate: 1, at: 100 }, { block: 3, spacing: 10 });
+  t(
+    'a mempool transaction: heard at its time in seconds, its ETA at the chain’s spacing',
+    heard.includes(new Date(100 * 1000).toLocaleTimeString()) && /in projected block 4, in ~40 min/.test(heard),
   );
 }
 done();

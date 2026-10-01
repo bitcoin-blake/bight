@@ -3,8 +3,10 @@
 // node.* from the messages before the page sees them, emits every message on 'message' too, holds the shared node lock in
 // start() (or reports node.lockError when the browser refuses it), answers mempool-get with mempool-tx from what it was
 // last sent, and clears node.unresponsive on 'responsive'. window.__fake records the options the page created it with,
-// what the page posted, and how often it started, followed and wiped. window.__fakeConfig (set before the page loads):
-// { lockError } makes the lock refused.
+// what the page posted, how often it started, followed and wiped, and the clock offsets it gave (setSkew).
+// window.__fakeConfig (set before the page loads): { lockError } makes the lock refused; { wipeFail } makes a wipe fail as
+// the loader's does when no node answers it (phase 'error', a fatal error message, a rejection); { wipeLeaves: [names] }
+// makes a wipe leave those files.
 export const mib = (b) => `${(b / 1048576).toFixed(1)} MiB`;
 export const n = (x) => Number(x).toLocaleString('en-US');
 export function createTabNode(opts = {}) {
@@ -48,7 +50,7 @@ export function createTabNode(opts = {}) {
     fire('message', { type: t, ...m });
   };
   const cfg = window.__fakeConfig ?? {};
-  const fake = (window.__fake = { node, emit, posts, opts, starts: 0, forced: 0, follows: [], wipes: 0 });
+  const fake = (window.__fake = { node, emit, posts, opts, starts: 0, forced: 0, follows: [], wipes: 0, skews: [] });
   const start = async ({ force = false } = {}) => {
     fake.starts++;
     if (force) {
@@ -115,6 +117,20 @@ export function createTabNode(opts = {}) {
     seedSupported: async () => true,
     setTorrent() {},
     setSeed() {},
-    wipe: async () => (fake.wipes++, { removed: ['x'], failed: [] }),
+    setSkew(s) {
+      fake.skews.push(s);
+    },
+    wipe: async () => {
+      fake.wipes++;
+      node.phase = 'wiped';
+      if (cfg.wipeFail) {
+        const text =
+          'the node did not wipe in time and is stopped: its files may be partly removed. Close the other tabs of this site and reload';
+        Object.assign(node, { phase: 'error', synced: false, error: text });
+        emit('error', { text, fatal: true });
+        throw new Error('the node did not wipe in time, and nothing is pending: close the other tabs of this site and try again');
+      }
+      return { removed: ['x'], failed: cfg.wipeLeaves ?? [] };
+    },
   };
 }

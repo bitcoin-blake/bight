@@ -5,7 +5,7 @@
 // The decisions (packing, bands, what was seen first, the chain cache, search, the status words, the sources, the
 // settings, the markup of tiles and details) are lib/*.mjs, tested; this file wires them to the document, patching in
 // place so a focused or selected element survives the next update.
-export const VERSION = '2026-10-01.6';
+export const VERSION = '2026-10-01.7';
 const $ = (id) => document.getElementById(id);
 const NODE = 'https://cdn.jsdelivr.net/gh/bitcoin-blake/blaketestnode@3037bb4c7ea414e75332632677ac2ffee191b704';
 const RELAYS = [
@@ -182,7 +182,7 @@ try {
 const { esc, n, fmtAge, txUrl } = FM;
 $('ver').textContent = VERSION;
 const SNAP_BASE = PARAMS.SNAPSHOT.baseHeight;
-const SNAP_SIZE = `${Math.round(PARAMS.SNAPSHOT.bytes / 2 ** 20)} MB`;
+const SNAP_SIZE = FM.fmtGB(PARAMS.SNAPSHOT.bytes);
 // the welcome's figures, from the node this page pins (the page's own text is checked against them in CI)
 $('wl-base').textContent = n(SNAP_BASE);
 $('wl-size').textContent = SNAP_SIZE;
@@ -242,7 +242,7 @@ const tn = createTabNode({ base: NODE, snapshotUrl: SRC.use.snapshot, blocksUrl:
 const node = tn.node;
 window.bight = { node, OPT, VERSION };
 const state = {
-  blocks: new Map(), // height → { height, hash, prev, time, nTx, size, txids, arrivedAt (ms) }: the last ones, for the tiles
+  blocks: new Map(), // height → { height, hash, prev, time, nTx, size, txids, fees }: the last ones, for the tiles
   found: new Map(), // height → block: older blocks asked by a search, kept apart from the tiles (the last few)
   wanted: new Map(), // height → when asked
   arrived: new Map(), // height → { at (ms), alone }: when this page learned of it (chain.markArrived)
@@ -252,9 +252,11 @@ const state = {
   samples: [],
   template: null,
   selected: null, // height of the mined block shown in the detail
+  openFound: null, // height of a block a search fetched, shown in the detail (it is not a tile)
   selectedProj: null, // index of the projected block shown in the detail
   opener: null, // { kind: 'p' | 'h' | 'r' | 'q', key } what opened the detail, for the focus on Close
   pendingTx: null, // { txid, opener, timer }: a transaction asked of the node for the detail
+  openTx: null, // { txid, opener, fed }: the mempool transaction the detail shows, from the node's whole copy
   pendingSearch: null, // { height, gen, timer }: a block asked of the node by a search
   highlight: null,
   followedAt: null, // when the page last began listening without a gap (ms): the first mempool state, moved on after a gap
@@ -262,6 +264,8 @@ const state = {
   feedBeat: null, // the node's last heartbeat value, and when this page saw it change (ms, this browser's clock)
   feedSeenAt: null,
   lastTick: Date.now(),
+  skew: null, // this browser's clock less the web server's, in seconds (from the Date of version.json), for the node
+  templateWanted: false, // a template asked while the tab was hidden: asked when it is shown
   lastSampleAt: 0,
   announcedSync: false,
   following: false,
@@ -283,6 +287,8 @@ const list = () => {
   return listMemo;
 };
 const blockAt = (h) => state.blocks.get(h) ?? state.found.get(h);
+// minutes between blocks lately, from the header times of the blocks shown: for the projected blocks' ETAs
+const spacing = () => FM.spacingMin([...state.blocks.values()]);
 
 // ---- status bar, pill and the node's state in words
 tn.on('sync', ({ msg, pct, eta }) => {
@@ -301,7 +307,7 @@ function pill() {
   $('pilldot').className = p.level;
   $('pilltxt').textContent = p.text;
   $('nodeinfo').textContent = node.st
-    ? `${node.coins ? n(node.coins) + ' coins · ' : ''}${node.recv ? FM.fmtMiB(node.recv) + ' fetched this session' : "from this browser's storage"}`
+    ? `${node.coins ? n(node.coins) + ' coins · ' : ''}${node.recv ? FM.fmtGB(node.recv) + ' fetched this session' : "from this browser's storage"}`
     : '';
   // what the node says about the chain and its sources, as notices
   if (node.unresponsive) banner('slow', 'warn', ST.plainError('not answered for two minutes'), [['Reload', () => location.reload()]]);
@@ -345,10 +351,27 @@ tn.on('message', (m) => {
   unbanner('slowstart');
   if (m.type === 'responsive' || m.type === 'unresponsive' || m.type === 'error') pill();
   if (m.type === 'mempool-tx') onMempoolTx(m);
+  // a wipe that left no node running (the loader says so as a fatal error): nothing more is asked of it
+  if (m.type === 'error' && m.fatal) {
+    state.running = false;
+    fatal(ST.plainError(m.text));
+  }
+  // the node answers a block it does not have with an error that carries no req: while a search waits, it is that answer
+  if (m.type === 'error' && /Block not found/.test(m.text ?? '') && state.pendingSearch) {
+    const h = state.pendingSearch.height;
+    dropPending();
+    openDetail(
+      `<h2 id="dtitle">Block ${esc(n(h))}</h2><p class="mut">the node has no block ${esc(n(h))} on its chain now (a reorganisation or a rollback may have just changed it); search again</p>`,
+      { kind: 'q' },
+      { focus: false },
+    );
+  }
 });
 
 // ---- the chain tip and the last blocks: asked from the worker by height, cached, dropped when a reorganisation replaced them
 tn.on('synced', (m) => {
+  // a gap in listening first: a block the node applied while the computer slept was not watched arriving
+  const gap = checkGap();
   if (!state.following && !state.wiped) {
     state.following = true;
     tn.followMempool({ relays: RELAYS });
@@ -359,12 +382,25 @@ tn.on('synced', (m) => {
   // generation is started, and the heights it replaced are asked again
   const from = m.height - (m.applied ?? 0) + 1;
   const replaced = [...state.wanted.keys()].filter((h) => h > m.height || (m.applied > 0 && h >= from && state.arrived.has(h)));
+  const gone = (h) => h > m.height || dropped.includes(h) || (m.applied > 0 && h >= from);
   if (dropped.length || replaced.length) {
     state.gen++;
     for (const h of [...dropped, ...replaced]) state.wanted.delete(h);
     for (const h of [...state.found.keys()]) if (h > m.height || dropped.includes(h)) state.found.delete(h);
   }
-  CH.markArrived(state.arrived, m, Date.now()); // every height this pass applied reached this tab now
+  CH.markArrived(state.arrived, m, Date.now(), { watched: !gap }); // every height this pass applied reached this tab now
+  // an open block that a reorganisation replaced is not left on screen as validated: it says so, and the new block is
+  // shown when the node answers (the tile's reply, or a search asked again under the new generation)
+  const open = !$('detail').hidden;
+  if (open && state.selected != null && dropped.includes(state.selected)) replacedDetail(state.selected);
+  if (open && state.openFound != null && gone(state.openFound)) {
+    const h = state.openFound;
+    state.found.delete(h);
+    replacedDetail(h, { opener: { kind: 'q' } });
+    if (h <= m.height) askSearch(h, { keepOpen: true });
+  }
+  // a search still waiting was asked under the generation just replaced: asked again
+  if (state.pendingSearch && state.pendingSearch.gen !== state.gen) askSearch(state.pendingSearch.height, { keepOpen: true });
   document.title = `Bight · txbt4 · ${n(m.height)}`;
   pill();
   if (!state.announcedSync) {
@@ -376,6 +412,10 @@ tn.on('synced', (m) => {
 });
 function wantBlocks() {
   if (state.wiped || !state.running) return;
+  // what was asked of heights no longer shown, and when blocks below the tiles arrived (the lowest tile keeps its
+  // predecessor's, for seen-first), are forgotten
+  if (node.height != null) CH.pruneBelow(state.wanted, node.height - 8);
+  if (state.blocks.size) CH.pruneBelow(state.arrived, Math.min(...state.blocks.keys()) - 1);
   for (const h of CH.wantHeights({ height: node.height, blocks: state.blocks, wanted: state.wanted, now: Date.now(), floor: SNAP_BASE }))
     tn.post({ type: 'block', height: h, req: CH.reqOf(state.gen) });
   scheduleRender();
@@ -388,8 +428,8 @@ const blockOf = (m) => ({
   nTx: m.nTx,
   size: m.size,
   txids: m.txids ?? [],
-  arrivedAt: state.arrived.get(m.height)?.at ?? null,
-  fees: Number.isFinite(m.fees) ? m.fees : null, // only if the node says (a later node, from the coinbase's value)
+  // the fees its coinbase claimed: its value (the node sends it since c3f6a46) less the subsidy; null from an older node
+  fees: CH.feesClaimed(m.coinbaseValue, m.height),
 });
 tn.on('block', (m) => {
   const r = CH.parseReq(m.req);
@@ -401,11 +441,14 @@ tn.on('block', (m) => {
   if (!kept) return;
   if (state.blocks.size > 40) state.blocks.delete(Math.min(...state.blocks.keys()));
   scheduleRender();
-  if (state.selected === m.height && !$('detail').contains(document.activeElement)) showBlock(m.height, { focus: false });
+  // the block open in the detail is shown again with what the node now says (after a reorganisation, the new block),
+  // without moving the focus
+  if (state.selected === m.height && !$('detail').hidden) showBlock(m.height, { focus: false });
 });
 
 // ---- the mempool: the loader keeps node.mempool; the page remembers every txid it accepted
 tn.on('mempool', (mp) => {
+  checkGap();
   state.followedAt ??= Date.now();
   state.followStartedAt ??= Date.now();
   // the publisher's heartbeat, by this browser's clock: a change seen now is a beat now; the node's first reading is the
@@ -415,6 +458,7 @@ tn.on('mempool', (mp) => {
     state.feedSeenAt = Math.min(mp.feedFileAt, Date.now());
   }
   SE.rememberSeen(state.seenTx, list());
+  refreshTx();
   // a sample for the graph from the node's own messages too: a background tab's timers are slowed, its messages are not
   if (Date.now() - state.lastSampleAt >= 5000) sample();
   scheduleRender();
@@ -422,8 +466,11 @@ tn.on('mempool', (mp) => {
 });
 // the worker's own block for the next height: asked at most every 2 s, and within 2 s of a change however busy the mempool;
 // whether it is still wanted is decided when the request goes, not when it was queued
+// a hidden tab does not ask (each build checks a whole block in the worker's one queue, beside the mempool's adds): it asks
+// once when shown
 const askTemplate = (() => {
   const go = SD.throttle(() => {
+    if (document.hidden) return void (state.templateWanted = true);
     if (node.synced && !state.wiped && !state.idle) tn.post({ type: 'template', pay: '6a00' });
   }, 2000);
   return () => node.synced && !state.wiped && go();
@@ -441,7 +488,12 @@ function scheduleRender() {
   requestAnimationFrame(renderAll);
 }
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && state.dirty) requestAnimationFrame(renderAll);
+  if (document.hidden) return;
+  if (state.dirty) requestAnimationFrame(renderAll);
+  if (state.templateWanted) {
+    state.templateWanted = false;
+    askTemplate();
+  }
 });
 function renderAll() {
   state.dirty = false;
@@ -450,7 +502,23 @@ function renderAll() {
   renderProjected(blocks);
   renderMempool(blocks);
   renderMined();
+  centreRow();
   pill();
+}
+// the next block and the chain tip in view: the row of tiles is scrolled to the divider between them when it first
+// overflows and whenever the number of projected tiles changes, until the person scrolls the row themselves
+const row = $('blocksrow');
+let rowCount = -1,
+  rowManual = false;
+const rowScrolled = () => (rowManual = true);
+row.addEventListener('wheel', rowScrolled, { passive: true });
+row.addEventListener('touchmove', rowScrolled, { passive: true });
+row.addEventListener('pointerdown', (e) => e.target === row && rowScrolled()); // its scrollbar
+function centreRow() {
+  const count = $('proj').children.length;
+  if (rowManual || count === rowCount || row.scrollWidth <= row.clientWidth) return;
+  rowCount = count;
+  row.scrollLeft = Math.max(0, row.querySelector('.divider').offsetLeft - row.clientWidth / 2);
 }
 // patch a row of tiles in place: one <button> per key, its content and name updated, moved only when out of place, so
 // the focused one keeps the focus. What is no longer shown is removed first, so the walk below moves only what is out of
@@ -494,7 +562,7 @@ const templateNow = (blocks = state.lastBlocks ?? []) =>
   NT.templateWords(state.template, node.height, node.hash, node.mempool ? { count: node.mempool.count, block: blocks[0] ?? null } : null);
 function renderProjected(blocks) {
   const tw = templateNow(blocks);
-  const note = tw.failed ? 'build fails' : tw.earlier ? 'built on an earlier mempool' : tw.differs ? 'the node’s build differs' : '';
+  const note = tw.failed ? 'build fails' : tw.otherMempool ? 'built on a different mempool' : tw.differs ? 'the node’s build differs' : '';
   const items = [];
   const sel = (i) => state.selectedProj === i;
   if (!blocks.length) {
@@ -528,7 +596,7 @@ function renderProjected(blocks) {
     // in the order they read: the furthest projection first, the next block beside the chain tip
     for (let i = blocks.length - 1; i >= 0; i--) {
       const b = blocks[i];
-      const t = V.projTile(b, i, { built: i === 0 && tw.ok ? state.template : null, note: i === 0 ? note : '' });
+      const t = V.projTile(b, i, { built: i === 0 && tw.ok ? state.template : null, note: i === 0 ? note : '', spacing: spacing() });
       const c = F.feeColors(b.wmed);
       items.push({
         key: 'p' + i,
@@ -570,14 +638,15 @@ function renderMined() {
       const unsigned = sh == null || h > sh;
       // how long ago it reached this tab, when it was watched arriving on its own; one that came in a catch-up (the first
       // sync, after sleep) is aged by its header, and says so
-      const fromArrival = b.arrivedAt != null && !!state.arrived.get(h)?.alone;
+      const arr = state.arrived.get(h);
+      const fromArrival = !!arr?.alone;
       const t = V.minedTile(b, {
         med: P.weightedMedian(known),
         known: known.length,
         others: sw.others,
         seenWords: sw.words,
         unsigned,
-        ageS: fromArrival ? Math.round((Date.now() - b.arrivedAt) / 1000) : now() - (b.time ?? now()),
+        ageS: fromArrival ? Math.round((Date.now() - arr.at) / 1000) : now() - (b.time ?? now()),
         ageFrom: fromArrival ? 'arrival' : 'header',
       });
       return {
@@ -601,6 +670,7 @@ const seenOf = (b) =>
 // gives it back to what opened it when it closes; Close sits in its header, and Escape closes it
 function openDetail(html, opener, { focus = true, keepPending = false } = {}) {
   if (!keepPending) dropPending();
+  state.openTx = null; // set again by showTx when it is a mempool transaction
   const d = $('detail');
   // the focus on something inside the detail (Close) would be lost with the content: it goes to the detail itself
   const inside = d.contains(document.activeElement) && document.activeElement !== d;
@@ -617,11 +687,12 @@ function openDetail(html, opener, { focus = true, keepPending = false } = {}) {
   }
   d.dataset.said = d.querySelector('#dtitle')?.textContent ?? '';
 }
-$('detail').addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !$('detail').hidden) {
-    e.preventDefault();
-    closeDetail();
-  }
+// Escape closes the detail from anywhere on the page (a tile, a row, the detail itself), unless a dialog is open: the
+// dialog's own Escape is meant then
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || e.defaultPrevented || $('detail').hidden || document.querySelector('dialog[open]')) return;
+  e.preventDefault();
+  closeDetail();
 });
 // a transaction or a block asked of the node for the detail is forgotten when the detail closes or shows something else
 function dropPending() {
@@ -636,6 +707,7 @@ function closeDetail() {
   $('detail').dataset.said = '';
   const o = state.opener;
   state.selected = null;
+  state.openFound = null;
   state.selectedProj = null;
   renderMined();
   renderProjected(state.lastBlocks ?? []);
@@ -653,6 +725,7 @@ function showBlock(h, { focus = true, foundTxid = null, opener = null } = {}) {
   const b = blockAt(h);
   if (!b) return;
   state.selected = state.blocks.has(h) ? h : null;
+  state.openFound = state.blocks.has(h) ? null : h;
   state.selectedProj = null;
   renderMined();
   renderProjected(state.lastBlocks ?? []);
@@ -671,6 +744,7 @@ function showBlock(h, { focus = true, foundTxid = null, opener = null } = {}) {
             : 'the signed chain tip agrees',
       inMempool: b.txids.filter((t) => mpIds.has(t)).length,
       foundTxid,
+      arrival: state.arrived.get(h) ?? null,
     }),
     opener ?? (foundTxid || !state.blocks.has(h) ? { kind: 'q' } : { kind: 'h', key: h }),
     { focus },
@@ -678,6 +752,7 @@ function showBlock(h, { focus = true, foundTxid = null, opener = null } = {}) {
 }
 function showProjected(b, i) {
   state.selected = null;
+  state.openFound = null;
   state.selectedProj = i;
   state.highlight = null;
   renderMined();
@@ -792,10 +867,11 @@ function openTx(txid, opener) {
   const full = (node.mempool?.txs ?? []).find((x) => x.txid === txid);
   state.highlight = txid;
   state.selected = null;
+  state.openFound = null;
   state.selectedProj = null;
   scheduleRender();
+  if (full) return showTx(full, opener);
   const block = P.blockIndex(state.lastBlocks ?? []).get(txid) ?? null;
-  if (full) return openDetail(V.mempoolTxDetail(full, { block }), opener);
   openDetail(`<h2 id="dtitle">In this tab's mempool</h2><p class="mut">asking the node for ${esc(txid.slice(0, 20))}…</p>`, opener);
   const timer = setTimeout(() => {
     if (state.pendingTx?.txid !== txid) return;
@@ -809,13 +885,26 @@ function openTx(txid, opener) {
   state.pendingTx = { txid, opener, timer, block };
   tn.post({ type: 'mempool-get', txid, req: 'bight' });
 }
+// a mempool transaction from the node's whole copy, with where it would go; shown again when that copy changes what it
+// says (a node's mempool took it: "fed")
+function showTx(tx, opener, { focus = true } = {}) {
+  const block = P.blockIndex(state.lastBlocks ?? []).get(tx.txid) ?? null;
+  openDetail(V.mempoolTxDetail(tx, { block, spacing: spacing() }), opener, { focus });
+  state.openTx = { txid: tx.txid, opener, fed: !!tx.fed };
+}
+function refreshTx() {
+  const o = state.openTx;
+  if (!o || $('detail').hidden) return;
+  const full = (node.mempool?.txs ?? []).find((x) => x.txid === o.txid);
+  if (full && !!full.fed !== o.fed) showTx(full, o.opener, { focus: false });
+}
 function onMempoolTx(m) {
   if (m.req !== 'bight' || state.pendingTx?.txid !== m.txid) return;
   const { opener, block } = state.pendingTx;
   dropPending();
   openDetail(
     m.found
-      ? V.mempoolTxDetail(m, { block })
+      ? V.mempoolTxDetail(m, { block, spacing: spacing() })
       : `<h2 id="dtitle">Not found</h2><p class="mut">no longer in this tab's mempool: confirmed or dropped</p>`,
     opener,
     { focus: false },
@@ -833,10 +922,19 @@ function sample() {
 const listeningGap = () => {
   if (state.followedAt != null) state.followedAt = Date.now();
 };
-setInterval(() => {
+// a gap in listening: neither this timer nor a message from the node for over two minutes (the computer slept, or the
+// browser froze the tab). A background tab's timers run about once a minute, and the node's messages go on: not a gap.
+// Checked here and first thing on every sync and mempool message, so a block applied during sleep is not counted.
+function checkGap() {
   const t = Date.now();
-  if (t - state.lastTick > 30e3) listeningGap();
+  const gap = t - state.lastTick > 120e3;
+  if (gap) listeningGap();
   state.lastTick = t;
+  return gap;
+}
+setInterval(() => {
+  checkGap();
+  const t = Date.now();
   if (state.wiped || state.idle) return;
   if (t - state.lastSampleAt >= 4500) sample();
   wantBlocks();
@@ -945,29 +1043,41 @@ $('search').onsubmit = (e) => {
   if (r.where === 'block') return showBlock(r.height, { foundTxid: r.txid ?? null, opener: { kind: 'q' } });
   // a height this tab does not hold: any block between the snapshot and the tip is asked of the node
   const range = r.height != null ? SC.heightRange(r.height, { floor: SNAP_BASE, tip: node.synced ? node.height : null }) : null;
-  if (range === 'ask') {
-    openDetail(`<h2 id="dtitle">Block ${esc(n(r.height))}</h2><p class="mut">asking the node for block ${esc(n(r.height))}…</p>`, {
-      kind: 'q',
-    });
-    const timer = setTimeout(() => {
-      if (state.pendingSearch?.height !== r.height) return;
-      state.pendingSearch = null;
-      openDetail(
-        `<h2 id="dtitle">Block ${esc(n(r.height))}</h2><p class="mut">the node did not answer in 15 seconds; search again to retry</p>`,
-        { kind: 'q' },
-        { focus: false },
-      );
-    }, 15e3);
-    state.pendingSearch = { height: r.height, gen: state.gen, timer };
-    tn.post({ type: 'block', height: r.height, req: CH.reqOf(state.gen, true) });
-    return;
-  }
+  if (range === 'ask') return askSearch(r.height);
   if (r.where === 'none') r.searched = SC.searchedOf([...state.blocks.values()]); // the last blocks, not those a search fetched
   openDetail(
     `<h2 id="dtitle">Not found</h2><p class="mut">${esc(V.notFoundWords(r, { count: node.mempool?.count ?? 0, range, floor: SNAP_BASE, tip: node.height }))}</p>`,
     { kind: 'q' },
   );
 };
+// a block asked of the node for a search, under the current generation (given up after 15 s); keepOpen: the detail already
+// says why it is asking (a reorganisation replaced the block shown)
+function askSearch(h, { keepOpen = false } = {}) {
+  clearTimeout(state.pendingSearch?.timer);
+  if (!keepOpen)
+    openDetail(`<h2 id="dtitle">Block ${esc(n(h))}</h2><p class="mut">asking the node for block ${esc(n(h))}…</p>`, { kind: 'q' });
+  const timer = setTimeout(() => {
+    if (state.pendingSearch?.height !== h) return;
+    state.pendingSearch = null;
+    openDetail(
+      `<h2 id="dtitle">Block ${esc(n(h))}</h2><p class="mut">the node did not answer in 15 seconds; search again to retry</p>`,
+      { kind: 'q' },
+      { focus: false },
+    );
+  }, 15e3);
+  state.pendingSearch = { height: h, gen: state.gen, timer };
+  tn.post({ type: 'block', height: h, req: CH.reqOf(state.gen, true) });
+}
+// the block open in the detail was replaced by a reorganisation (or rolled back): said in place of it, without moving the
+// focus, until the node answers with the block now at that height
+function replacedDetail(h, { opener = { kind: 'h', key: h } } = {}) {
+  const gone = node.height != null && h > node.height;
+  const words = gone
+    ? `rolled back: the chain is now at ${n(node.height)}, below this block`
+    : 'replaced by a reorganisation: asking the node for the block now at this height…';
+  openDetail(`<h2 id="dtitle">Block ${esc(n(h))}</h2><p class="mut">${esc(words)}</p>`, opener, { focus: false });
+  say(`Block ${n(h)} was ${gone ? 'rolled back' : 'replaced by a reorganisation'}`);
+}
 // a block a search asked for: kept apart from the tiles (the last few), and shown if that search is still the one open
 function onSearchBlock(m, r) {
   if (r.gen !== state.gen || !m.hash) return;
@@ -1040,7 +1150,7 @@ $('o-wipe').onclick = () => {
     Promise.resolve(tn.wipe()).then(
       (r) => {
         state.wiped = true;
-        // the files are gone, so is the answer to "may I download 830 MB": the next visit asks again
+        // the files are gone, so is the answer to "may I download 870 MB": the next visit asks again
         LS.del('reef:started');
         LS.del('bight:started');
         $('dlg').close();
@@ -1057,6 +1167,10 @@ $('o-wipe').onclick = () => {
       },
       (e) => {
         $('o-wipenote').textContent = 'not wiped: ' + (e?.message || e);
+        // the loader stops the node for a wipe; one that failed may have left none running (phase 'error'): the pill and
+        // the notices say so rather than "up to date" over a stopped node
+        if (node.phase === 'error' || node.phase === 'wiped') state.running = false;
+        pill();
       },
     );
   } else {
@@ -1153,17 +1267,24 @@ $('o-diag').onclick = async () => {
 // ---- a newer Bight: checked a little after start and then hourly, offered, never forced
 async function checkVersion() {
   try {
-    const v = await (await fetch('version.json', { cache: 'no-cache' })).json();
+    const r = await fetch('version.json', { cache: 'no-cache' });
+    // this browser's clock against the web server's (its Date, to the second): the node judges signed tips by real time
+    const served = Date.parse(r.headers.get('date') ?? '');
+    if (Number.isFinite(served)) {
+      state.skew = Math.round((Date.now() - served) / 1000);
+      if (state.running) tn.setSkew?.(state.skew);
+    }
+    const v = await r.json();
     if (VS.newer(v.version, VERSION))
       banner('update', 'info', `A newer Bight is available (${v.version}). Reload to use it.`, [
         ['Reload', () => reloadWith({ v: v.version })],
       ]);
   } catch {}
 }
-setTimeout(checkVersion, 10e3);
+setTimeout(checkVersion, 10e3); // also run when the node starts (startNode), for the clock
 setInterval(checkVersion, 3600e3);
 
-// ---- start: what the browser needs, the person's go before 830 MB (shared with Reef: one answer for both), one node
+// ---- start: what the browser needs, the person’s go before 870 MB (shared with Reef: one answer for both), one node
 function missingFeatures() {
   const miss = [];
   if (!navigator.storage?.getDirectory) miss.push('a private file system for sites (OPFS)');
@@ -1222,6 +1343,9 @@ async function startNode(force = false) {
     if (started === false) return node.lockError ? lockFailed(node.lockError) : goIdle();
     state.running = true;
     navigator.storage?.persist?.().catch(() => {}); // asked on every start: a site not asked is the first evicted
+    // the clock's offset for the node, once its worker runs (a message before then is not delivered)
+    if (state.skew != null) tn.setSkew?.(state.skew);
+    else checkVersion();
     // a node whose code hangs while loading never says a word: after a minute of silence, that is said
     setTimeout(() => {
       if (!node.st && !node.error && !node.synced)
@@ -1237,10 +1361,9 @@ async function startNode(force = false) {
   }
 }
 async function welcome(force = false) {
-  // persistent storage asked first: a browser that grants it may allow more, and the estimate below is then the real one
-  await navigator.storage?.persist?.().catch(() => {});
+  // persistent storage is asked only after Start (Firefox asks the person, and nothing is agreed yet)
   const est = await navigator.storage?.estimate?.().catch(() => null);
-  // what the node needs less what it already has here (files kept from an interrupted start count): about 1.1 GB in all
+  // what the node needs less what it already has here (files kept from an interrupted start count)
   const NEED = 1.2e9;
   const need = est ? Math.max(0, NEED - (est.usage ?? 0)) : NEED;
   const free = est ? est.quota - est.usage : null;
@@ -1249,8 +1372,8 @@ async function welcome(force = false) {
     free == null
       ? 'The browser does not say how much space it allows.'
       : short
-        ? `The browser allows ${FM.fmtMiB(free)} more for this site, and the node needs about ${FM.fmtMiB(need)} more. It will likely stop when the space runs out: free disk space first, or, in a private window, open Bight in an ordinary one instead.`
-        : `The browser allows ${FM.fmtMiB(free)} more for this site; the node needs about ${FM.fmtMiB(need)} more.`;
+        ? `The browser allows ${FM.fmtGB(free)} more for this site, and the node needs about ${FM.fmtGB(need)} more. It will likely stop when the space runs out: free disk space first, or, in a private window, open Bight in an ordinary one instead.`
+        : `The browser allows ${FM.fmtGB(free)} more for this site; the node needs about ${FM.fmtGB(need)} more.`;
   $('wl-space').classList.toggle('badt', short);
   // in a frame on another site, the download is not started by a click there: Bight opens in its own tab
   $('wl-start').textContent = foreignFrame ? 'Open Bight in its own tab' : short ? 'Start anyway' : 'Start';
@@ -1266,6 +1389,8 @@ async function welcome(force = false) {
     banner('welcome', 'info', 'The node is not started. Nothing is downloaded until you start it.', [
       ['Start the node…', () => $('welcome').showModal()],
     ]);
+    // the dialog gives the focus back to where it was (the page itself): it goes to the way to start later instead
+    setTimeout(() => document.querySelector('#banners [data-b="welcome"] button')?.focus(), 0);
   };
   $('welcome').oncancel = (e) => {
     e.preventDefault();

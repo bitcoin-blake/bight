@@ -45,8 +45,14 @@ async function profile(seed = {}, { config = null, version = null } = {}) {
       return route.fulfill({ status: 200, contentType: 'text/javascript', body: readFileSync(`${ROOT}test/fake/tabnode.js`) });
     if ((m = u.match(/^https:\/\/cdn\.jsdelivr\.net\/gh\/bitcoin-blake\/blaketestnode@([0-9a-f]+)\/(lib\/params\.mjs)$/)))
       return route.fulfill({ status: 200, contentType: 'text/javascript', body: execSync(`git -C ${BTN} show ${m[1]}:${m[2]}`) });
+    // version.json as the web server sends it, with its Date (the server's clock, here 30 s behind this browser's)
     if (version && u.startsWith(ORIGIN + '/version.json'))
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ version }) });
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ version }),
+        headers: { date: new Date(Date.now() - 30000).toUTCString(), 'access-control-expose-headers': 'date' },
+      });
     // a page on another site that frames Bight
     if (u === 'http://127.0.0.1:8798/xframe')
       return route.fulfill({
@@ -125,7 +131,7 @@ const reqFor = (page, height) =>
 const reply = async (page, b) => emit(page, 'block', { ...b, req: await reqFor(page, b.height) });
 const text = (page, sel) => page.textContent(sel).catch(() => '');
 
-// 1: a first visit asks before the 830 MB download, before it looks at the lock; Start starts the node with the defaults
+// 1: a first visit asks before the 870 MB download, before it looks at the lock; Start starts the node with the defaults
 {
   const p = await profile();
   const a = await p.open();
@@ -237,12 +243,12 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
     /building on the new tip/.test(await text(a, '#m-next')) && !/✓ built/.test(await text(a, '#proj')),
   );
   await emit(a, 'template', { ...tpl, checks: { ok: true, failed: [] }, mempool: { count: 4 } });
-  await until(a, () => /earlier mempool/.test(document.getElementById('m-next').textContent));
+  await until(a, () => /different mempool/.test(document.getElementById('m-next').textContent));
   t(
-    'one built from an earlier mempool than the page shows: said, and no "✓ built"',
-    /^built on an earlier mempool \(4 tx then\)/.test(await text(a, '#m-next')) &&
+    'one built from another mempool than the page shows: said with both counts, and no "✓ built"',
+    /^built on a different mempool \(4 tx in the node's, 5 here\)/.test(await text(a, '#m-next')) &&
       !/✓ built/.test(await text(a, '#proj')) &&
-      /built on an earlier mempool/.test(await text(a, '#proj')),
+      /built on a different mempool/.test(await text(a, '#proj')),
     await text(a, '#m-next'),
   );
   await emit(a, 'template', { ...tpl, checks: { ok: true, failed: [] } });
@@ -713,15 +719,16 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
       !/seen first/.test(await text(a, '#mined [data-k=h152103]')),
     await text(a, '#mined [data-k=h152103]'),
   );
-  // the timer comes back a minute late (asleep): the next block's predecessor arrived before the gap, so it is not counted
+  // the timer comes back three minutes late (asleep): the next block's predecessor arrived before the gap, so it is not counted
+  const sync1 = (h) => emit(a, 'synced', { height: h, hash: h.toString(16).padStart(64, '0'), applied: 1 });
   await at(25000);
-  await emit(a, 'synced', { height: 152104, hash: (152104).toString(16).padStart(64, '0'), applied: 1 });
-  await at(100000);
+  await sync1(152104);
+  await at(200000);
   await a.waitForTimeout(5500); // one tick of the page's 5 s timer sees the clock jump
-  await at(101000);
-  await emit(a, 'synced', { height: 152105, hash: (152105).toString(16).padStart(64, '0'), applied: 1 });
-  await at(102000);
-  await emit(a, 'synced', { height: 152106, hash: (152106).toString(16).padStart(64, '0'), applied: 1 });
+  await at(201000);
+  await sync1(152105);
+  await at(202000);
+  await sync1(152106);
   await until(a, () => window.__fake.posts.some((m) => m.type === 'block' && m.height === 152106));
   for (const h of [152104, 152105, 152106]) await reply(a, blk(h, [X.txid]));
   await until(a, () => !!document.querySelector('#mined [data-k=h152106]'));
@@ -729,6 +736,33 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
     'after a gap in listening, the first block whose predecessor came before it is not counted; the next one is',
     /not listening then/.test(await text(a, '#mined [data-k=h152105]')) && /seen first/.test(await text(a, '#mined [data-k=h152106]')),
     (await text(a, '#mined [data-k=h152105]')) + ' | ' + (await text(a, '#mined [data-k=h152106]')),
+  );
+  // waking with a block the node applied during sleep, before any timer ran: the sync itself sees the gap, so that block
+  // (alone in its pass) was not watched arriving and is not counted, nor is the next; the one after is
+  await at(400000);
+  await sync1(152107);
+  await at(401000);
+  await sync1(152108);
+  await at(402000);
+  await sync1(152109);
+  // a background tab: its timer runs once a minute, which is not a gap; a block after that minute still counts
+  await at(462000);
+  await a.waitForTimeout(5500);
+  await at(462500);
+  await sync1(152110);
+  await until(a, () => window.__fake.posts.some((m) => m.type === 'block' && m.height === 152110));
+  for (const h of [152107, 152108, 152109, 152110]) await reply(a, blk(h, [X.txid]));
+  await until(a, () => !!document.querySelector('#mined [data-k=h152110]'));
+  const tile = (h) => text(a, `#mined [data-k=h${h}]`);
+  t(
+    'a block applied while asleep is not counted though it came alone (the sync sees the gap first); counting resumes after',
+    /not listening then/.test(await tile(152107)) && /not listening then/.test(await tile(152108)) && /seen first/.test(await tile(152109)),
+    [await tile(152107), await tile(152108), await tile(152109)].join(' | '),
+  );
+  t(
+    'a minute without a timer (a background tab) is not a gap: the next block counts',
+    /seen first/.test(await tile(152110)),
+    await tile(152110),
   );
   t('no page errors on the controlled clock', !p.errors.length, p.errors.join(' | '));
   await p.ctx.close();
@@ -739,6 +773,10 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
   const a = await p.open();
   await until(a, () => !!document.querySelector('#welcome[open]'));
   await a.click('#wl-later');
+  t(
+    '"Not now" puts the focus on the notice’s way to start later, not on the page',
+    await until(a, () => document.activeElement?.closest?.('#banners [data-b=welcome]') != null),
+  );
   t(
     '"Not now" starts nothing and leaves a notice to start later',
     (await until(a, () => !!document.querySelector('#banners [data-b=welcome] button'))) &&
@@ -775,6 +813,170 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
   );
   await opened?.close();
   t('no page errors in a frame on another site', !p.errors.length, p.errors.join(' | '));
+  await p.ctx.close();
+}
+// 11: the node's figures and changes while a detail is open: the clock's offset, the fees a coinbase claimed, a
+// transaction a node's mempool takes, a reorganisation under an open block, a late reply below the tip, Escape from a tile,
+// and the block row centred on the chain tip at phone width
+{
+  const p = await profile({ 'reef:started': '1' }, { version: '2026-01-01.1' });
+  const a = await p.open();
+  await a.setViewportSize({ width: 390, height: 844 });
+  await until(a, () => window.__fake.starts === 1);
+  t(
+    'the clock’s offset against the web server (its Date) is given to the node once it runs',
+    await until(a, () => window.__fake.skews.some((s) => Math.abs(s - 30) <= 3)),
+    JSON.stringify(await a.evaluate(() => window.__fake.skews)),
+  );
+  const Y = { ...mtx('9', 1, 3), fed: false };
+  const many = Array.from({ length: 3000 }, (_, i) => mtx('8', i, 1 + (i % 40), 400));
+  await emit(a, 'mempool', mp([Y, ...many]));
+  const hx = (h, c = 'a') => (c + h.toString(16)).padStart(64, '0');
+  await emit(a, 'synced', { height: 152101, hash: hx(152101), applied: 1 });
+  await until(a, () => window.__fake.posts.filter((m) => m.type === 'block').length >= 8);
+  for (let h = 152094; h <= 152101; h++)
+    await reply(a, {
+      height: h,
+      hash: hx(h),
+      previousblockhash: hx(h - 1),
+      size: 400,
+      nTx: 1,
+      header: { time: Math.floor(Date.now() / 1000) - (152101 - h) * 1200 },
+      txids: ['00'.repeat(32)],
+      coinbaseValue: 5e9 + 450,
+    });
+  await until(a, () => !!document.querySelector('#mined [data-k=h152101]'));
+  t(
+    'a block with no transaction this tab knew shows the fees its coinbase claimed (its value less the subsidy)',
+    /450 sat in fees/.test(await text(a, '#mined [data-k=h152101]')) &&
+      /450 sat in fees claimed by its coinbase/.test(await a.getAttribute('#mined [data-k=h152101]', 'aria-label')),
+    await text(a, '#mined [data-k=h152101]'),
+  );
+  t(
+    'at phone width the row opens on the next block and the chain tip, not the far end of the projections',
+    await until(a, () => {
+      const r = document.getElementById('blocksrow');
+      const d = r.querySelector('.divider').getBoundingClientRect();
+      const box = r.getBoundingClientRect();
+      return r.scrollLeft > 0 && d.left >= box.left && d.right <= box.right;
+    }),
+  );
+  await a.click('#mined [data-k=h152101]');
+  await until(a, () => /Fees claimed by its coinbase/.test(document.getElementById('detail').textContent));
+  t('the block detail names the fees its coinbase claimed', /Fees claimed by its coinbase450 sat/.test(await text(a, '#detail')));
+  // a reorganisation while that block is open: said in its place, then the new block shown, without moving the focus
+  const oldReq = await reqFor(a, 152100);
+  await emit(a, 'synced', { height: 152101, hash: hx(152101, 'b'), applied: 2 });
+  t(
+    'a reorganisation under an open block: the detail says it was replaced, not "validated"',
+    (await until(a, () => /replaced by a reorganisation/.test(document.getElementById('detail').textContent))) &&
+      !/Validated by/.test(await text(a, '#detail')),
+    await text(a, '#detail'),
+  );
+  await reply(a, {
+    height: 152101,
+    hash: hx(152101, 'b'),
+    previousblockhash: hx(152100, 'b'),
+    size: 400,
+    nTx: 1,
+    header: { time: Math.floor(Date.now() / 1000) },
+    txids: ['00'.repeat(32)],
+  });
+  t(
+    '…and the new block is shown there when the node answers',
+    await until(a, (h) => document.getElementById('detail').textContent.includes(h), hx(152101, 'b')),
+  );
+  // a late reply, below the tip, asked before the reorganisation: ignored (the old generation), not kept as a tile
+  await emit(a, 'block', {
+    height: 152100,
+    hash: hx(152100),
+    previousblockhash: hx(152099),
+    size: 400,
+    nTx: 1,
+    header: { time: 1 },
+    txids: ['00'.repeat(32)],
+    req: oldReq,
+  });
+  await a.waitForTimeout(200);
+  t('a late reply below the tip from the replaced branch is ignored', !(await a.$('#mined [data-k=h152100]')));
+  // Escape from a tile (the focus outside the detail) closes it
+  await a.focus('#mined [data-k=h152101]');
+  await a.keyboard.press('Escape');
+  t('Escape closes the detail from a tile too', await until(a, () => document.getElementById('detail').hidden));
+  // a transaction a node's mempool takes while it is open: the detail says so without moving the focus
+  await a.fill('#q', Y.txid);
+  await a.press('#q', 'Enter');
+  await until(a, () => /In this tab's mempool/.test(document.getElementById('detail').textContent));
+  t('a transaction heard only from a relay does not say a node has it', !/from a node’s mempool/.test(await text(a, '#detail')));
+  await a.focus('#q');
+  await emit(a, 'mempool', mp([{ ...Y, fed: true }, ...many]));
+  t(
+    '…and says so once a node’s mempool takes it (the open detail is refreshed, the focus stays)',
+    (await until(a, () => /from a node’s mempool/.test(document.getElementById('detail').textContent))) &&
+      (await a.evaluate(() => document.activeElement?.id === 'q')),
+  );
+  // a digit-only start of an id is searched as an id, not read as a height
+  await a.fill('#q', '00000000');
+  await a.press('#q', 'Enter');
+  t(
+    'eight zeros are the start of a block hash, not block 0',
+    await until(a, () => !/block 0 is/.test(document.getElementById('detail').textContent) && !document.getElementById('detail').hidden),
+    await text(a, '#detail'),
+  );
+  t('no page errors with the node’s new figures', !p.errors.length, p.errors.join(' | '));
+  await p.ctx.close();
+}
+// 12: a wipe that fails the way the loader's does when no node answers: no frozen "up to date" over a stopped node
+{
+  const p = await profile({ 'reef:started': '1' }, { config: { wipeFail: true } });
+  const a = await p.open();
+  await until(a, () => window.__fake.starts === 1);
+  await emit(a, 'synced', { height: 152101, hash: 'ee'.repeat(32), applied: 1 });
+  await until(a, () => /up to date/.test(document.getElementById('pilltxt').textContent));
+  await a.click('#settings');
+  await a.click('#o-wipe');
+  await a.click('#o-wipe');
+  t(
+    'a failed wipe: said in Settings, a notice that the node stopped, and the pill red',
+    (await until(a, () => /not wiped/.test(document.getElementById('o-wipenote').textContent))) &&
+      (await until(a, () => !!document.querySelector('#banners [data-b=fatal]'))) &&
+      /stopped/.test(await text(a, '#pilltxt')) &&
+      (await a.getAttribute('#pilldot', 'class')) === 'bad',
+    (await text(a, '#pilltxt')) + ' | ' + (await text(a, '#banners')),
+  );
+  t('no page errors after a failed wipe', !p.errors.length, p.errors.join(' | '));
+  await p.ctx.close();
+}
+// 13: a wipe that leaves files behind: named, and the reload left to the person
+{
+  const p = await profile({ 'reef:started': '1' }, { config: { wipeLeaves: ['blocks.dat'] } });
+  const a = await p.open();
+  await until(a, () => window.__fake.starts === 1);
+  await emit(a, 'synced', { height: 152101, hash: 'ee'.repeat(32), applied: 1 });
+  await a.click('#settings');
+  await a.click('#o-wipe');
+  await a.click('#o-wipe');
+  t(
+    'a wipe that left a file names it, and the pill says wiped',
+    (await until(a, () => /blocks\.dat/.test(document.querySelector('#banners [data-b=wiped]')?.textContent ?? ''))) &&
+      /wiped/.test(await text(a, '#pilltxt')),
+  );
+  await p.ctx.close();
+}
+// 14: "Run anyway" never skips the welcome: the answer was forgotten (a wipe in another tab) before it was pressed
+{
+  const p = await profile({ 'reef:started': '1' }, { config: { lockError: 'refused' } });
+  const a = await p.open();
+  await until(a, () => !!document.querySelector('#banners [data-b=lockfail] button'));
+  await a.evaluate(() => {
+    localStorage.removeItem('reef:started');
+    localStorage.removeItem('bight:started');
+  });
+  await a.click('#banners [data-b=lockfail] button');
+  t(
+    'Run anyway with no answer to the download asks first, and starts nothing',
+    (await until(a, () => !!document.querySelector('#welcome[open]'))) && (await a.evaluate(() => window.__fake.forced)) === 0,
+  );
   await p.ctx.close();
 }
 await browser.close();
