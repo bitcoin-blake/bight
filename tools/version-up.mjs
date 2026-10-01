@@ -14,7 +14,13 @@ try {
 if (!changed.some((f) => /^(bight\.js|bight-app\.js|theme\.js|lib\/|index\.html)/.test(f))) process.exit(0);
 const key = (v) => (/^(\d{4})-(\d{2})-(\d{2})\.(\d+)$/.exec(v) ?? []).slice(1).map(Number);
 const now = JSON.parse(readFileSync('version.json', 'utf8')).version;
-const was = JSON.parse(sh(`git show ${base}:version.json`)).version;
+let was;
+try {
+  was = JSON.parse(sh(`git show ${base}:version.json`)).version;
+} catch {
+  console.log(`no version.json at ${base}: the first versioned release (${now})`);
+  process.exit(0);
+}
 const [a, b] = [key(now), key(was)];
 const i = a.findIndex((x, j) => x !== b[j]);
 if (a.length !== 4 || b.length !== 4 || i < 0 || a[i] < b[i]) {
