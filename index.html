@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob: https://cdn.jsdelivr.net/gh/bitcoin-blake/blaketestnode@cebed0bb2fcf2157e32e8411a5594fb48d878a81/ https://cdn.jsdelivr.net/gh/sidestr/spec@cec654b7d06907130700fe52c66c3f9d0921495d/ https://cdn.jsdelivr.net/gh/bitcoin-desktop/schema@b8cbf6337c7450fe14ddc5bce00c7280059aab5d/ https://cdn.jsdelivr.net/npm/webtorrent@3.0.21/dist/webtorrent.min.js; worker-src 'self' blob: https://cdn.jsdelivr.net/gh/bitcoin-blake/blaketestnode@cebed0bb2fcf2157e32e8411a5594fb48d878a81/ https://cdn.jsdelivr.net/gh/sidestr/spec@cec654b7d06907130700fe52c66c3f9d0921495d/ https://cdn.jsdelivr.net/gh/bitcoin-desktop/schema@b8cbf6337c7450fe14ddc5bce00c7280059aab5d/; connect-src 'self' https: wss:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob: https://cdn.jsdelivr.net/gh/bitcoin-blake/blaketestnode@5550637a7f31866e61ce215e1c2bd7b30a12ab80/ https://cdn.jsdelivr.net/gh/sidestr/spec@cec654b7d06907130700fe52c66c3f9d0921495d/ https://cdn.jsdelivr.net/gh/bitcoin-desktop/schema@b8cbf6337c7450fe14ddc5bce00c7280059aab5d/ https://cdn.jsdelivr.net/npm/webtorrent@3.0.21/dist/webtorrent.min.js; worker-src 'self' blob: https://cdn.jsdelivr.net/gh/bitcoin-blake/blaketestnode@5550637a7f31866e61ce215e1c2bd7b30a12ab80/ https://cdn.jsdelivr.net/gh/sidestr/spec@cec654b7d06907130700fe52c66c3f9d0921495d/ https://cdn.jsdelivr.net/gh/bitcoin-desktop/schema@b8cbf6337c7450fe14ddc5bce00c7280059aab5d/; connect-src 'self' https: wss:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>Bight · txbt4 mempool</title>
 <meta name="description" content="A mempool monitor in a browser tab for txbt4, the BLAKE2b testnet4: every transaction shown was validated by the tab's own node, and the next block is the one this tab would build.">
 <meta property="og:site_name" content="Bight"><meta property="og:title" content="Bight · a mempool in a tab"><meta property="og:description" content="A mempool monitor that validates every transaction itself, in the browser. The next block on the page is the one this tab would build. BLAKE2b testnet4."><meta property="og:type" content="website"><meta property="og:url" content="https://bitcoin-blake.github.io/bight/"><meta property="og:image" content="https://bitcoin-blake.github.io/bight/og.png"><meta name="twitter:card" content="summary_large_image">
@@ -13,7 +13,7 @@
 :root {
   color-scheme: dark;
   --bg:#0d0f1a; --panel:#161929; --panel2:#1d2135; --line:#262b42; --grid:#262b42;
-  --text:#e8eaf2; --mut:#8d92ab;
+  --text:#e8eaf2; --mut:#8d92ab; --fieldline:#4f5577;
   --acc:#f0a04b; --blue:#5b9def; --purple:#6a5ae0; --green:#3ec28f; --red:#e5605a;
   --shadow:0 1px 2px rgba(0,0,0,.25),0 6px 20px rgba(0,0,0,.28);
   --shadow-lg:0 12px 40px rgba(0,0,0,.5);
@@ -25,7 +25,7 @@
 :root[data-theme="light"] {
   color-scheme: light;
   --bg:#f2f0ea; --panel:#ffffff; --panel2:#efece4; --line:#e0dbcf; --grid:#e6e1d5;
-  --text:#22242e; --mut:#6d7080;
+  --text:#22242e; --mut:#5f6272; --fieldline:#9a9384;
   --acc:#d97f1e; --blue:#2f6fc4; --purple:#5a4bd1; --green:#1b9c6b; --red:#cf3d37;
   --shadow:0 1px 2px rgba(60,50,30,.06),0 6px 18px rgba(60,50,30,.09);
   --shadow-lg:0 14px 44px rgba(60,50,30,.22);
@@ -40,10 +40,11 @@ a { color:var(--blue) } a:hover { text-decoration:none }
 .mono, .kv .v, td.amt { font-variant-numeric:tabular-nums; font-feature-settings:"tnum" }
 * { scrollbar-width:thin; scrollbar-color:var(--line) transparent }
 *::-webkit-scrollbar { width:8px; height:8px } *::-webkit-scrollbar-thumb { background:var(--line); border-radius:4px } *::-webkit-scrollbar-track { background:transparent }
-:focus-visible { outline:2px solid var(--acc); outline-offset:2px; border-radius:4px }
+:focus-visible { outline:2px solid var(--focus); outline-offset:2px; border-radius:4px }
+:root { --focus:#f0a04b } :root[data-theme="light"] { --focus:#9a520a }
 
 .top { display:flex; align-items:center; gap:14px; padding:10px 18px; border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:5 }
-.top .brand { display:flex; align-items:center; gap:10px; font-weight:700; font-size:17.5px; letter-spacing:.2px }
+.top .brand { display:flex; align-items:center; gap:10px; font-weight:700; font-size:17.5px; letter-spacing:.2px; margin:0 }
 .top .brand span { color:var(--mut); font-weight:400; font-size:12.5px }
 .top .fill { flex:1 }
 
@@ -55,10 +56,10 @@ a { color:var(--blue) } a:hover { text-decoration:none }
 @keyframes tp { 0%,100% { opacity:1 } 50% { opacity:.3 } }
 
 .search { display:flex; gap:6px }
-.search input { width:360px; max-width:38vw; padding:6px 11px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); font:inherit; font-family:var(--mono); font-size:12.5px; transition:border-color .15s,box-shadow .15s }
+.search input { width:360px; max-width:38vw; padding:6px 11px; border:1px solid var(--fieldline); border-radius:8px; background:var(--bg); color:var(--text); font:inherit; font-family:var(--mono); font-size:12.5px; transition:border-color .15s,box-shadow .15s }
 .search input::placeholder { color:var(--mut) }
-.search input:focus { outline:none; border-color:var(--acc); box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 22%,transparent) }
-.search button, .btn { padding:6px 13px; border:1px solid var(--line); border-radius:8px; background:var(--panel2); color:var(--text); font:inherit; cursor:pointer; transition:border-color .15s,background .15s,transform .08s }
+.search input:focus-visible { outline:2px solid var(--focus); outline-offset:1px }
+.search button, .btn { padding:6px 13px; border:1px solid var(--fieldline); border-radius:8px; background:var(--panel2); color:var(--text); font:inherit; cursor:pointer; transition:border-color .15s,background .15s,transform .08s }
 .btn:hover, .search button:hover { border-color:var(--mut) }
 .btn:active, .search button:active { transform:translateY(1px) }
 .iconbtn { display:inline-flex; align-items:center; justify-content:center; padding:6px 9px }
@@ -67,19 +68,20 @@ a { color:var(--blue) } a:hover { text-decoration:none }
 :root[data-theme="light"] .i-sun { display:none }
 
 main { padding:18px 18px 64px; max-width:1500px; margin:0 auto }
+h1 { font-size:17.5px; margin:0; font-weight:700; display:flex; align-items:center; gap:10px; letter-spacing:.2px }
 h2 { font-size:11.5px; text-transform:uppercase; letter-spacing:1px; color:var(--mut); margin:0 0 12px; font-weight:650 }
 
 .blocksrow { display:flex; align-items:stretch; gap:14px; overflow-x:auto; padding:6px 2px 16px }
-.blocks { display:flex; gap:10px } .blocks.proj { flex-direction:row-reverse }
-.divider { width:0; border-left:2px dashed var(--line); position:relative; margin:0 64px 0 8px }
-.divider::after { content:"chain tip"; position:absolute; top:-3px; left:9px; font-size:10.5px; letter-spacing:.4px; color:var(--mut); white-space:nowrap }
-.blk { width:132px; min-width:132px; height:132px; border-radius:10px; padding:10px 11px; display:flex; flex-direction:column; justify-content:space-between; cursor:pointer; position:relative; transition:transform .18s ease,box-shadow .18s ease; box-shadow:var(--blksh) }
+.blocks { display:flex; gap:10px }
+.divider { width:0; border-left:2px dashed var(--line); position:relative; margin:18px 16px 0 }
+.divider::after { content:"chain tip"; position:absolute; top:-18px; left:-24px; font-size:10.5px; letter-spacing:.4px; color:var(--mut); white-space:nowrap }
+.blk { width:132px; min-width:132px; height:132px; border-radius:10px; padding:10px 11px; display:flex; flex-direction:column; justify-content:space-between; text-align:left; font:inherit; border:0; cursor:pointer; position:relative; transition:transform .18s ease,box-shadow .18s ease; box-shadow:var(--blksh) }
 .blk:hover { transform:translateY(-4px); box-shadow:var(--blksh-h) }
-.blk .h { font-weight:700; font-size:13.5px } .blk .r { font-size:12px; opacity:.95 } .blk .s { font-size:11px; opacity:.82 }
+.blk span { display:block } .blk .h { font-weight:700; font-size:13.5px } .blk .r { font-size:12px } .blk .s { font-size:11px } .blk .sub { display:inline; font-size:10.5px } .blk .badge { display:inline; font-size:10px; font-weight:600; padding:0 4px; border:1px solid currentColor; border-radius:4px; margin-left:3px }
 .blk.mined { background:linear-gradient(160deg,#6a5ae0,#4435ad); color:#fff }
 .blk.proj { background:linear-gradient(160deg,var(--c1),var(--c2)); color:#fff }
 .blk.empty { background:var(--panel2); border:1px dashed var(--line); box-shadow:none; color:var(--mut) }
-.blk.sel { outline:2px solid var(--acc); outline-offset:2px }
+.blk.sel { box-shadow:inset 0 0 0 3px var(--text), var(--blksh) } .blk.sel::after { content:'selected'; position:absolute; bottom:-17px; left:0; right:0; text-align:center; font-size:10px; color:var(--mut) }
 
 .grid { display:grid; grid-template-columns:1.1fr 1fr 1.3fr; gap:14px; margin-top:6px }
 @media (max-width:1100px) { .grid { grid-template-columns:1fr 1fr } }
@@ -90,13 +92,14 @@ h2 { font-size:11.5px; text-transform:uppercase; letter-spacing:1px; color:var(-
 .mut { color:var(--mut) } .mono { font-family:var(--mono) }
 
 .hist { display:flex; align-items:flex-end; gap:3px; height:90px; margin-top:14px }
-.hist div { flex:1; background:linear-gradient(180deg,var(--blue),color-mix(in srgb,var(--blue) 65%,var(--bg))); border-radius:3px 3px 0 0; position:relative; min-height:2px }
+.hist div { flex:1; background:var(--blue); border-radius:3px 3px 0 0; position:relative; min-height:2px }
 .hist div:hover { opacity:.8 }
 .hist div span { position:absolute; bottom:-16px; left:0; right:0; text-align:center; font-size:9.5px; color:var(--mut) }
 .histlbl { display:flex; justify-content:space-between; font-size:11px; color:var(--mut); margin-top:20px }
 canvas.g { width:100%; height:160px; display:block; margin-top:6px }
 
 .tblwrap { max-height:480px; overflow:auto; margin:0 -18px -16px; padding:0 18px 16px; border-radius:0 0 12px 12px }
+.txbtn { background:none; border:0; padding:0; font:inherit; color:var(--text); cursor:pointer; text-decoration:underline; text-decoration-color:var(--line) } .ext { text-decoration:none; margin-left:2px }
 table { width:100%; border-collapse:collapse; font-size:12.5px }
 th { text-align:left; color:var(--mut); font-weight:600; font-size:11.5px; letter-spacing:.4px; padding:6px 8px; border-bottom:1px solid var(--line) }
 .tblwrap th { position:sticky; top:0; background:var(--panel); z-index:1 }
@@ -105,8 +108,9 @@ td.amt, th.amt { text-align:right; font-family:var(--mono) }
 tr:hover td { background:var(--panel2) }
 tr.hi td { background:var(--hi) }
 
-.detail { margin-top:14px }
+.detail { margin-top:14px } .detail:focus { outline:2px solid var(--focus) } .detail table { margin-top:10px } .detail .note { margin-top:8px } .dfoot { margin-top:8px }
 .refusals { font-family:var(--mono); font-size:11.5px; color:var(--mut); max-height:120px; overflow:auto; margin-top:8px; white-space:pre-wrap }
+.idlecard { display:none } body.idle main > :not(.idlecard) { display:none } body.idle .idlecard { display:block }
 
 .status { position:fixed; left:0; right:0; bottom:0; background:var(--panel); border-top:1px solid var(--line); padding:7px 18px; display:flex; align-items:center; gap:12px; font-size:12.5px; z-index:5 }
 .status .msg { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
@@ -119,19 +123,22 @@ dialog::backdrop { background:rgba(8,8,16,.6) }
 dialog .t { padding:12px 18px; border-bottom:1px solid var(--line); font-weight:650 }
 dialog .b { padding:16px 18px; display:grid; gap:12px }
 dialog .b label { display:grid; gap:5px; font-size:12.5px; color:var(--mut) }
-dialog .b input[type=text] { padding:7px 9px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); font:inherit; font-family:var(--mono); font-size:12px; transition:border-color .15s,box-shadow .15s }
-dialog .b input[type=text]:focus { outline:none; border-color:var(--acc); box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 22%,transparent) }
+dialog .b input[type=text] { padding:7px 9px; border:1px solid var(--fieldline); border-radius:8px; background:var(--bg); color:var(--text); font:inherit; font-family:var(--mono); font-size:12px; transition:border-color .15s,box-shadow .15s }
+dialog .b input[type=text]:focus-visible { outline:2px solid var(--focus); outline-offset:1px }
 dialog input[type=checkbox] { accent-color:var(--acc); width:15px; height:15px }
-dialog .row { display:flex; gap:8px; align-items:center; color:var(--text) }
+dialog .row, dialog .b label.row { display:flex; gap:8px; align-items:center; color:var(--text) }
 dialog .f { padding:12px 18px; border-top:1px solid var(--line); display:flex; justify-content:flex-end; gap:8px }
 .note { font-size:11.5px; color:var(--mut); line-height:1.5 }
 
 @media (max-width:760px) {
   main { padding:12px 12px 60px }
-  .top { flex-wrap:wrap; gap:10px }
-  .search { order:3; width:100% } .search input { max-width:none; flex:1 }
+  .top { flex-wrap:wrap; gap:10px; position:static }
+  .search { order:3; width:100%; flex-basis:100% } .search input { max-width:none; flex:1 } .top .fill { display:none }
   .top .brand span { display:none }
+  .pb { width:72px } #nodeinfo, .status .ver { display:none } .status .msg { min-width:0; flex:1 1 auto }
+  td.mono .txbtn { max-width:12ch; overflow:hidden; text-overflow:ellipsis; display:inline-block; vertical-align:bottom }
 }
+@media (min-width:761px) and (max-width:1100px) { .grid > .panel:nth-child(3) { grid-column:1 / -1 } }
 .sr { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap }
 #banners { display:flex; flex-direction:column; gap:0 }
 .banner { display:flex; flex-wrap:wrap; gap:8px 12px; align-items:center; padding:8px 18px; border-bottom:1px solid var(--line); font-size:12.5px; background:var(--panel2) }
@@ -142,34 +149,40 @@ dialog .f { padding:12px 18px; border-top:1px solid var(--line); display:flex; j
 .blk.more { width:auto; min-width:132px; cursor:default }
 .badt { color:var(--red) }
 body.embedded .top .brand span { display:none }
-@media (prefers-reduced-motion:reduce) { *,*::before,*::after { animation-duration:.01ms !important; transition-duration:.01ms !important } }
+@media (prefers-reduced-motion:reduce) { *,*::before,*::after { animation:none !important; transition:none !important } .blk:hover { transform:none } }
+@media (forced-colors:active) {
+  .blk { border:1px solid CanvasText } .blk.sel { outline:3px solid Highlight; box-shadow:none }
+  .hist div, .pb i, .pill i { background:CanvasText; forced-color-adjust:none }
+  .search input:focus-visible, dialog input:focus-visible, :focus-visible { outline:2px solid Highlight }
+}
 </style>
 </head>
 <body>
-<div class="top"><div class="brand"><svg width="26" height="26" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#1e2236"/><path d="M6 22c4-10 8-10 10 0s6 10 10 0" fill="none" stroke="#f0a04b" stroke-width="3" stroke-linecap="round"/></svg>Bight <span>txbt4 mempool · BLAKE2b testnet4 · a node in this tab</span></div><div class="fill"></div>
-  <span class="pill" id="pill"><i id="pilldot" class="sync"></i><span id="pilltxt">starting</span></span>
-  <form class="search" id="search"><input id="q" placeholder="search a txid" spellcheck="false"><button type="submit">Search</button></form><button class="btn iconbtn" id="theme" title="Toggle light / dark theme"><svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg><svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></button><button class="btn iconbtn" id="settings" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button></div>
-<div id="banners" aria-label="Notices"></div><div id="announce" class="sr" role="status" aria-live="polite"></div>
+<header class="top"><h1 class="brand"><svg aria-hidden="true" width="26" height="26" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#1e2236"/><path d="M6 22c4-10 8-10 10 0s6 10 10 0" fill="none" stroke="#f0a04b" stroke-width="3" stroke-linecap="round"/></svg>Bight <span>txbt4 mempool · BLAKE2b testnet4 · a node in this tab</span></h1><div class="fill"></div>
+  <span class="pill" id="pill"><i id="pilldot" class="sync" aria-hidden="true"></i><span id="pilltxt">starting</span></span>
+  <form class="search" id="search" role="search"><label class="sr" for="q">Search a transaction id, a block hash or a block height</label><input id="q" placeholder="txid, block hash or height" spellcheck="false" autocomplete="off"><button type="submit">Search</button></form><button class="btn iconbtn" id="theme" type="button" aria-label="Switch theme"><svg aria-hidden="true" class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg><svg aria-hidden="true" class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></button><button class="btn iconbtn" id="settings" type="button" aria-label="Settings"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button></header>
+<section id="banners" aria-label="Notices"></section><div id="announce" class="sr" role="status" aria-live="polite"></div>
 <main>
-  <h2>Blocks · the next ones as this tab would build them, then the last ones it validated</h2>
-  <div class="blocksrow"><div class="blocks proj" id="proj"><div class="blk empty"><div class="h">next block</div><div class="s">the mempool is followed once the tab is up to date</div></div></div><div class="divider"></div><div class="blocks" id="mined"></div></div>
-  <div class="panel detail" id="detail" hidden></div>
+  <div class="panel idlecard"><h2>This tab is idle</h2><p>Another tab of this browser runs the node, and with it the mempool. Bight shows them where the node runs; this tab takes over as soon as that tab closes.</p></div>
+  <h2 id="blocks-h">Blocks · the next ones as this tab would build them, then the last ones it validated</h2>
+  <div class="blocksrow" role="group" aria-labelledby="blocks-h"><div class="blocks proj" id="proj"><div class="blk empty"><span class="h">next block</span><span class="s">the mempool is followed once the tab is up to date</span></div></div><div class="divider" aria-hidden="true"></div><div class="blocks" id="mined"></div></div>
+  <div class="panel detail" id="detail" tabindex="-1" role="region" aria-labelledby="dtitle" hidden></div>
   <div class="grid">
-    <div class="panel"><h2>Mempool</h2><div class="kv"><span class="l">Transactions</span><span class="v" id="m-count">…</span><span class="l">Size</span><span class="v" id="m-size">…</span><span class="l">Fees waiting</span><span class="v" id="m-fees">…</span><span class="l">Median rate</span><span class="v" id="m-med">…</span><span class="l">Next block</span><span class="v" id="m-next">…</span></div><div class="note" id="m-cover" style="margin-top:8px"></div><div class="hist" id="hist"></div><div class="histlbl"><span>1 sat/vB</span><span>fee rate bands (log)</span><span>≥ 1000</span></div></div>
-    <div class="panel"><h2>Where it comes from</h2><div class="kv"><span class="l">Relays</span><span class="v" id="s-relays">…</span><span class="l">Heard</span><span class="v" id="s-seen">0</span><span class="l">Accepted</span><span class="v" id="s-acc">0</span><span class="l">Refused</span><span class="v" id="s-ref">0</span><span class="l">Dropped</span><span class="v" id="s-drop">0</span><span class="l">From the mirror on start</span><span class="v" id="s-seed">…</span><span class="l">A node's mempool last heard</span><span class="v" id="s-feed">…</span></div><div class="note" id="chainnote" style="margin-top:8px"></div><div class="note" style="margin-top:10px">Kind 23404 events are a node publishing its mempool, one transaction each; kind 23503 events are sends from sidestr wallets. Each is checked here against this tab's own UTXO set before it counts. Refused lately:</div><div class="refusals" id="refusals">none</div></div>
-    <div class="panel"><h2>Over time · <span id="gspan">this session</span></h2><canvas class="g" id="g" role="img" aria-label="Mempool over time"></canvas><div class="note" style="margin-top:4px"><span style="color:var(--blue)">■</span> transactions <span style="color:var(--acc);margin-left:10px">■</span> vB · each line scaled to its own top · <span id="gmax"></span></div></div>
+    <section class="panel" aria-labelledby="mp-h"><h2 id="mp-h">Mempool</h2><div class="kv"><span class="l">Transactions</span><span class="v" id="m-count">…</span><span class="l">Size</span><span class="v" id="m-size">…</span><span class="l">Fees waiting</span><span class="v" id="m-fees">…</span><span class="l">Median rate (by size)</span><span class="v" id="m-med">…</span><span class="l">Next block</span><span class="v" id="m-next">…</span></div><div class="note" id="m-cover" style="margin-top:8px"></div><div class="hist" id="hist" role="img" aria-label="vB by fee rate"></div><div class="histlbl" aria-hidden="true"><span>sat/vB, log scale</span><span>vB by fee rate</span><span>≥ 1000</span></div><table class="sr"><caption>vB by fee rate band</caption><thead><tr><th scope="col">sat/vB</th><th scope="col">vB</th></tr></thead><tbody id="histtbl"></tbody></table></section>
+    <section class="panel" aria-labelledby="src-h"><h2 id="src-h">Where it comes from</h2><div class="kv"><span class="l">Relays</span><span class="v" id="s-relays">…</span><span class="l">Heard</span><span class="v" id="s-seen">0</span><span class="l">Accepted</span><span class="v" id="s-acc">0</span><span class="l">Refused</span><span class="v" id="s-ref">0</span><span class="l">Dropped (mined or evicted)</span><span class="v" id="s-drop">0</span><span class="l">From the mirror on start</span><span class="v" id="s-seed">…</span><span class="l">The node's mempool reported</span><span class="v" id="s-feed">…</span><span class="l">Last transaction from it</span><span class="v" id="s-feedtx">…</span></div><div class="note" id="chainnote" style="margin-top:8px"></div><div class="note" style="margin-top:10px">Kind 23404 events are a node publishing its mempool, one transaction each; kind 23503 events are sends from sidestr wallets. Each is checked here against this tab's own UTXO set before it counts. Refused lately:</div><div class="refusals" id="refusals" tabindex="0" role="region" aria-label="Recent refusals">none</div></section>
+    <section class="panel" aria-labelledby="g-h"><h2 id="g-h">Over time · <span id="gspan">this session</span></h2><canvas class="g" id="g" role="img" aria-label="Mempool over time"></canvas><div class="note" style="margin-top:4px"><span style="color:var(--blue)" aria-hidden="true">━</span> transactions <span style="color:var(--acc);margin-left:10px" aria-hidden="true">╍</span> vB (dashed) · each line scaled to its own top · <span id="gmax"></span></div></section>
   </div>
-  <div class="panel" style="margin-top:14px"><h2>Transactions in this tab's mempool</h2><div class="tblwrap"><table><thead><tr><th>Transaction</th><th>Age</th><th class="amt">vB</th><th class="amt">Fee (sat)</th><th class="amt">sat/vB</th><th>Block</th></tr></thead><tbody id="rows"><tr><td colspan="6" class="mut">nothing yet</td></tr></tbody></table></div></div>
+  <section class="panel" style="margin-top:14px" aria-labelledby="tx-h"><h2 id="tx-h">Transactions in this tab's mempool</h2><div class="tblwrap" tabindex="0" role="region" aria-labelledby="tx-h"><table><caption class="sr">The newest 300 transactions in this tab's mempool</caption><thead><tr><th scope="col">Transaction</th><th scope="col">Age</th><th scope="col" class="amt">vB</th><th scope="col" class="amt">Fee (sat)</th><th scope="col" class="amt">sat/vB</th><th scope="col">Block</th></tr></thead><tbody id="rows"><tr><td colspan="6" class="mut">nothing yet</td></tr></tbody></table></div></section>
 </main>
-<div class="status"><span class="msg" id="syncmsg">Starting…</span><span id="synceta" class="mut"></span><div class="pb" id="pb" hidden><i id="pbi"></i></div><span class="mut" id="nodeinfo"></span><span class="mut">Bight <span id="ver"></span></span></div>
-<dialog id="dlg"><div class="t">Settings</div><div class="b">
-  <label>Snapshot URL<input type="text" id="o-snapshot"></label><label>Blocks URL (the mirror's file, without .dat)<input type="text" id="o-blocks"></label>
-  <label class="row" style="color:var(--text)"><input type="checkbox" id="o-torrent"> fetch the snapshot from the swarm (WebTorrent), the mirror as webseed</label>
-  <label class="row" style="color:var(--text)"><input type="checkbox" id="o-seed"> seed the snapshot while this tab is open</label>
-  <div class="row"><button class="btn" id="o-wipe">Wipe the node's files…</button><span class="note" id="o-wipenote"></span></div><div class="row"><button class="btn" id="o-diag" type="button">Copy diagnostics</button></div><textarea id="o-diagtext" hidden readonly rows="8" aria-label="Diagnostics" style="width:100%;font-family:var(--mono);font-size:11px"></textarea><div class="note" id="o-err" role="alert" style="color:var(--red)"></div>
+<footer class="status"><span class="msg" id="syncmsg">Starting…</span><span id="synceta" class="mut"></span><div class="pb" id="pb" role="progressbar" aria-label="Sync progress" aria-valuemin="0" aria-valuemax="100" hidden><i id="pbi"></i></div><span class="mut" id="nodeinfo"></span><span class="mut ver">Bight <span id="ver"></span></span></footer>
+<dialog id="dlg" aria-labelledby="dlg-t"><div class="t" id="dlg-t">Settings</div><div class="b">
+  <label>Snapshot URL<input type="text" id="o-snapshot" aria-describedby="o-snapnote"></label><span class="note" id="o-snapnote"></span><label>Blocks URL (the mirror's file, without .dat)<input type="text" id="o-blocks"></label>
+  <label class="row"><input type="checkbox" id="o-torrent"> fetch the snapshot from the swarm (WebTorrent), the mirror as webseed</label>
+  <label class="row"><input type="checkbox" id="o-seed"> seed the snapshot while this tab is open (uses your upload bandwidth)</label>
+  <div class="row"><button class="btn" id="o-wipe" type="button">Wipe the node's files…</button><span class="note" id="o-wipenote" role="status"></span></div><div class="row"><button class="btn" id="o-diag" type="button">Copy diagnostics</button></div><textarea id="o-diagtext" hidden readonly rows="8" aria-label="Diagnostics" style="width:100%;font-family:var(--mono);font-size:11px"></textarea><div class="note" id="o-err" role="alert" style="color:var(--red)"></div>
   <div class="note">Bight, Reef, Winch and Hitch share this site's storage, so one copy of the node's files serves all four, and one tab runs the node. Source: <a href="https://github.com/bitcoin-blake/bight" target="_blank" rel="noopener">github.com/bitcoin-blake/bight</a>.</div>
-</div><div class="f"><button class="btn" id="o-reset" type="button" style="margin-right:auto">Reset to defaults</button><button class="btn" id="o-cancel">Cancel</button><button class="btn" id="o-ok">OK</button></div></dialog>
+</div><div class="f"><button class="btn" id="o-reset" type="button" style="margin-right:auto">Reset to defaults</button><button class="btn" id="o-cancel" type="button">Cancel</button><button class="btn" id="o-ok" type="button">OK</button></div></dialog>
 <dialog id="welcome" aria-labelledby="wl-t" aria-describedby="wl-d"><div class="t" id="wl-t">Welcome to Bight</div><div class="b"><p id="wl-d" style="margin:0">To show the mempool, this tab runs a node: it downloads the chain's state at block 150,307 (<b>830 MB</b>), checks it, and validates every block since. That takes a few minutes on a fast connection and longer on a slow one; it is kept for next time (and shared with Reef, Winch and Hitch), and resumes if interrupted. Avoid starting on a metered connection.</p><p id="wl-space" class="note" style="margin:0"></p></div><div class="f"><button class="btn" id="wl-later" type="button">Not now</button><button class="btn" id="wl-start" type="button">Start</button></div></dialog>
-<script type="module" src="bight.js?v=2026-10-01.1"></script>
+<script type="module" src="bight.js?v=2026-10-01.2"></script>
 </body>
 </html>

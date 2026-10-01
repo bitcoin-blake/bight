@@ -2,10 +2,12 @@
 // The node in the tab is the shared loader (browser/tabnode.js, pinned by commit); this file is the page: the projected
 // blocks the tab itself would build from its own mempool, the last blocks it validated, the fee bands, the sources,
 // a graph over the session, and a search. Every transaction shown was validated here; nothing is relayed onward.
-// The decisions (packing, bands, what was seen first, search, the status words, the sources) are lib/*.mjs, tested.
-export const VERSION = '2026-10-01.1';
+// The decisions (packing, bands, what was seen first, the chain cache, search, the status words, the sources, the
+// settings, the markup of tiles and details) are lib/*.mjs, tested; this file wires them to the document, patching in
+// place so a focused or selected element survives the next update.
+export const VERSION = '2026-10-01.2';
 const $ = (id) => document.getElementById(id);
-const NODE = 'https://cdn.jsdelivr.net/gh/bitcoin-blake/blaketestnode@cebed0bb2fcf2157e32e8411a5594fb48d878a81';
+const NODE = 'https://cdn.jsdelivr.net/gh/bitcoin-blake/blaketestnode@5550637a7f31866e61ce215e1c2bd7b30a12ab80';
 const RELAYS = [
   'wss://relay.primal.net',
   'wss://nostr.oxtr.dev',
@@ -13,6 +15,22 @@ const RELAYS = [
   'wss://relay.damus.io',
   'wss://relay.nostr.band',
   'wss://nostr.mom',
+];
+export const MODULES = [
+  'pack',
+  'fees',
+  'seen',
+  'series',
+  'search',
+  'fmt',
+  'node-text',
+  'status',
+  'sources',
+  'version',
+  'chain',
+  'schedule',
+  'settings',
+  'view',
 ];
 const store = (s) => ({
   get: (k) => {
@@ -41,17 +59,29 @@ const LS = store(() => localStorage),
 const q = new URLSearchParams(location.search);
 const embedded = q.get('embedded') === '1';
 if (embedded) document.body.classList.add('embedded');
+// every reload keeps the page's query (embedded=1, an accepted source) and changes only what it must
+const reloadWith = (set = {}, drop = []) => {
+  const p = new URLSearchParams(location.search);
+  for (const k of drop) p.delete(k);
+  for (const [k, v] of Object.entries(set)) p.set(k, v);
+  const s = p.toString();
+  location.replace(location.pathname + (s ? '?' + s : ''));
+};
 
-// ---- notices: one line each under the top bar; said once to screen readers through #announce
+// ---- notices: one line each under the top bar; said to screen readers when a notice is new or grows more serious, not
+// on every change of its words (a count of minutes would otherwise be spoken once a minute)
+const RANK = { info: 0, warn: 1, bad: 2 };
 function banner(id, cls, text, actions = []) {
   let el = document.querySelector(`#banners [data-b="${id}"]`);
   if (el && el.dataset.text === cls + text) return;
+  const prev = el?.dataset.cls;
   if (!el) {
     el = document.createElement('div');
     el.dataset.b = id;
     $('banners').appendChild(el);
   }
   el.dataset.text = cls + text;
+  el.dataset.cls = cls;
   el.className = 'banner ' + cls;
   el.textContent = '';
   const t = document.createElement('span');
@@ -65,41 +95,44 @@ function banner(id, cls, text, actions = []) {
     b.onclick = fn;
     el.appendChild(b);
   }
-  $('announce').textContent = text;
+  if (prev == null || (RANK[cls] ?? 0) > (RANK[prev] ?? 0)) say(text);
 }
 const unbanner = (id) => document.querySelector(`#banners [data-b="${id}"]`)?.remove();
+const say = (text) => {
+  $('announce').textContent = '';
+  setTimeout(() => ($('announce').textContent = text), 50);
+};
 const fatal = (text) => {
   $('syncmsg').textContent = text;
   banner('fatal', 'bad', text, [['Reload', () => location.reload()]]);
 };
 
+// ---- a cached page and a script from different releases: reload once for this pair of versions (only if the browser
+// can remember that it did, or it would reload for ever), and run nothing meanwhile
+{
+  const asked = document.querySelector('script[src*="bight.js"]')?.src.match(/v=([^&]+)/)?.[1];
+  const key = 'bight:mixed:' + decodeURIComponent(asked ?? '') + '>' + VERSION;
+  if (asked && decodeURIComponent(asked) !== VERSION && !SS.get(key) && SS.set(key, '1')) {
+    reloadWith({ v: VERSION });
+    await new Promise(() => {});
+  }
+}
+
 // ---- the code: the node's loader from the CDN (with a deadline: a CDN that hangs would leave "Starting…" for ever), then
 // this page's own modules, cache-busted with the version so a page never runs another release's modules
-let createTabNode, mib, n, P, F, SE, SR, SC, FM, NT, ST, SO, PARAMS;
+let createTabNode, mib, PARAMS, P, F, SE, SR, SC, FM, NT, ST, SO, VS, CH, SD, SET, V;
 try {
   const deadline = new Promise((_, no) => setTimeout(() => no(new Error('no answer in 20 seconds')), 20e3));
-  [{ createTabNode, mib, n }, PARAMS] = await Promise.race([
+  [{ createTabNode, mib }, PARAMS] = await Promise.race([
     Promise.all([import(`${NODE}/browser/tabnode.js`), import(`${NODE}/lib/params.mjs`)]),
     deadline,
   ]);
-  [P, F, SE, SR, SC, FM, NT, ST, SO] = await Promise.all(
-    ['pack', 'fees', 'seen', 'series', 'search', 'fmt', 'node-text', 'status', 'sources'].map((m) => import(`./lib/${m}.mjs?v=${VERSION}`)),
-  );
+  [P, F, SE, SR, SC, FM, NT, ST, SO, VS, CH, SD, SET, V] = await Promise.all(MODULES.map((m) => import(`./lib/${m}.mjs?v=${VERSION}`)));
 } catch (e) {
   fatal(`Bight could not load its code (${e.message}). The CDN (cdn.jsdelivr.net) may be unreachable: check the connection and reload.`);
   throw e;
 }
-const { esc, fmtAge, txUrl, blockUrl, etaWords } = FM;
-// a cached page and a script from different releases: reload once for this pair of versions, and run nothing meanwhile
-{
-  const asked = document.querySelector('script[src*="bight.js"]')?.src.match(/v=([^&]+)/)?.[1];
-  const key = 'bight:mixed:' + decodeURIComponent(asked ?? '') + '>' + VERSION;
-  if (asked && decodeURIComponent(asked) !== VERSION && !SS.get(key)) {
-    SS.set(key, '1');
-    location.replace(location.pathname + '?v=' + encodeURIComponent(VERSION));
-    await new Promise(() => {});
-  }
-}
+const { esc, n, fmtAge, txUrl } = FM;
 $('ver').textContent = VERSION;
 const SNAP_BASE = PARAMS.SNAPSHOT.baseHeight;
 
@@ -108,24 +141,16 @@ const SRC = SO.resolveSources({ get: LS.get, query: q, accepted: (k) => SS.get('
 for (const k of Object.keys(SRC.proposed))
   if (SRC.use[k] !== SRC.proposed[k]) {
     const v = SRC.proposed[k];
-    const host = (() => {
-      try {
-        return new URL(v).host;
-      } catch {
-        return v;
-      }
-    })();
     banner(
       'src-' + k,
       'warn',
-      `This link asks Bight to read the ${k === 'snapshot' ? 'snapshot' : 'blocks'} from ${host}. A source you do not trust can show you a chain that is not the real one. It is ignored unless you choose it, for this visit only.`,
+      `This link asks Bight to read the ${k === 'snapshot' ? 'snapshot' : 'blocks'} from ${SO.hostOf(v)}. A source you do not trust can show you a chain that is not the real one. It is ignored unless you choose it, for this visit only.`,
       SO.validUrl(v)
         ? [
             [
               'Use it for this visit',
               () => {
-                SS.set('bight:accept:' + k, v);
-                location.reload();
+                if (SS.set('bight:accept:' + k, v)) location.reload();
               },
             ],
             ['Ignore', () => unbanner('src-' + k)],
@@ -133,29 +158,58 @@ for (const k of Object.keys(SRC.proposed))
         : [['Ignore', () => unbanner('src-' + k)]],
     );
   }
+// a source that is not the default, in use: said for as long as it is, with the way back
+{
+  const custom = SO.nonDefault(SRC.use);
+  if (custom.length)
+    banner(
+      'custom-src',
+      'warn',
+      `Reading ${custom.map((k) => `the ${k} from ${SO.hostOf(SRC.use[k])}`).join(' and ')}, not the default source. What this page shows is that source's chain.`,
+      [
+        [
+          'Back to the default',
+          () => {
+            for (const k of ['snapshot', 'blocks']) SS.del('bight:accept:' + k);
+            const w = SET.sourceWrites({
+              fields: { snapshot: SO.DEFAULT_SNAP, blocks: SO.DEFAULT_BLOCKS },
+              bight: { snapshot: SO.validUrl(LS.get('bight:snapshot')), blocks: SO.validUrl(LS.get('bight:blocks')) },
+              reef: { snapshot: SO.validUrl(LS.get('reef:snapshot')), blocks: SO.validUrl(LS.get('reef:blocks')) },
+              defaults: { snapshot: SO.DEFAULT_SNAP, blocks: SO.DEFAULT_BLOCKS },
+            });
+            for (const x of w) x.del ? LS.del(x.key) : LS.set(x.key, x.set);
+            reloadWith({}, ['snapshot', 'blocks']);
+          },
+        ],
+      ],
+    );
+}
 const OPT = SO.parseOptions(LS.get('bight:options'));
 
 const tn = createTabNode({ base: NODE, snapshotUrl: SRC.use.snapshot, blocksUrl: SRC.use.blocks, torrent: OPT.torrent, seed: OPT.seed });
 const node = tn.node;
-window.bight = { tn, node, OPT, VERSION };
+window.bight = { node, OPT, VERSION };
 const state = {
   blocks: new Map(), // height → { height, hash, prev, time, nTx, size, txids, arrivedAt }
   wanted: new Map(), // height → when asked
-  tipSeenAt: new Map(), // height → when this page learned of it (s)
+  arrived: new Map(), // height → when this page learned of it (s)
   seenTx: new Map(),
   refusals: [],
   samples: [],
   template: null,
-  selected: null,
+  selected: null, // height of the mined block shown in the detail
+  opener: null, // { kind: 'p' | 'h' | 'q', key } what opened the detail, for the focus on Close
   highlight: null,
   followedAt: null, // when the first mempool state arrived (s)
-  followStartedAt: null, // ms, for the silent-feed warning
+  following: false,
   running: false,
   idle: false,
   wiped: false,
   dirty: false,
+  log: [],
 };
 const now = () => Math.floor(Date.now() / 1000);
+const list = () => P.mempoolList(node.mempool);
 
 // ---- status bar, pill and the node's state in words
 tn.on('sync', ({ msg, pct, eta }) => {
@@ -165,6 +219,7 @@ tn.on('sync', ({ msg, pct, eta }) => {
   else {
     $('pb').hidden = false;
     $('pbi').style.width = Math.max(0, Math.min(100, pct)).toFixed(1) + '%';
+    $('pb').setAttribute('aria-valuenow', pct.toFixed(0));
   }
   pill();
 });
@@ -173,16 +228,19 @@ function pill() {
   $('pilldot').className = p.level;
   $('pilltxt').textContent = p.text;
   $('nodeinfo').textContent = node.st
-    ? `${node.coins ? n(node.coins) + ' coins · ' : ''}${mib(node.recv)} received${node.sent ? ' · ' + mib(node.sent) + ' sent' : ''}`
+    ? `${node.coins ? n(node.coins) + ' coins · ' : ''}${node.recv ? mib(node.recv) + ' fetched this session' : "from this browser's storage"}`
     : '';
   // what the node says about the chain and its sources, as notices
-  if (node.error && !state.idle) banner('nodeerr', 'bad', ST.plainError(node.error), [['Reload', () => location.reload()]]);
+  if (node.unresponsive) banner('slow', 'warn', ST.plainError('not answered for two minutes'), [['Reload', () => location.reload()]]);
+  else unbanner('slow');
+  if (node.error && !state.idle && !node.unresponsive)
+    banner('nodeerr', 'bad', ST.plainError(node.error), [['Reload', () => location.reload()]]);
   else unbanner('nodeerr');
   const c = node.synced ? ST.chainState(node) : null;
   if (c && (c.level === 'warn' || c.level === 'bad')) banner('chain', c.level === 'bad' ? 'bad' : 'warn', c.text);
   else unbanner('chain');
   $('chainnote').textContent = c ? c.text : '';
-  const fd = ST.feedState(node.mempool, { followedAt: state.followStartedAt });
+  const fd = ST.feedState(node.mempool);
   if (fd) banner('feed', 'warn', fd.text);
   else unbanner('feed');
 }
@@ -197,84 +255,80 @@ tn.on('log', ({ text, level }) => {
   }
   const s = NT.parseSeedLine(text);
   if (s) $('s-seed').textContent = s.ok ? `${s.accepted} of ${s.total}` : `not loaded: ${s.error}`;
-  if (level === 'err') console.warn(text);
+  if (level === 'err') {
+    state.log.push(
+      String(text)
+        .replace(/https?:\/\/\S+/g, '<url>')
+        .slice(0, 200),
+    ); // for diagnostics, without addresses
+    if (state.log.length > 20) state.log.shift();
+  }
 });
 tn.on('nostr', () => {
   pill();
   scheduleRender();
 });
-tn.on('error', () => pill());
-tn.on('unresponsive', () => pill());
+tn.on('message', (m) => {
+  unbanner('slowstart');
+  if (m.type === 'responsive' || m.type === 'unresponsive' || m.type === 'error') pill();
+  if (m.type === 'mempool-tx') onMempoolTx(m);
+});
 
 // ---- the chain tip and the last blocks: asked from the worker by height, cached, dropped when a reorganisation replaced them
 tn.on('synced', (m) => {
-  if (!node.mempoolOn) {
-    node.mempoolOn = true;
-    state.followStartedAt = Date.now();
+  if (!state.following && !state.wiped) {
+    state.following = true;
     tn.followMempool({ relays: RELAYS });
-    $('s-relays').textContent = `${RELAYS.length} followed`;
+    $('s-relays').textContent = `${RELAYS.length} asked (the node does not report which answer)`;
   }
-  // a block replaced, or a rollback: the cached ones at and above the first height this pass applied go
-  const from = m.height - (m.applied ?? 0) + 1;
-  for (const h of [...state.blocks.keys()]) if (h > m.height || (m.applied && h >= from)) state.blocks.delete(h);
-  const tipCached = state.blocks.get(m.height);
-  if (tipCached && m.hash && tipCached.hash !== m.hash) state.blocks.clear();
-  if (!state.tipSeenAt.has(m.height)) state.tipSeenAt.set(m.height, now());
+  CH.onSynced(state.blocks, m);
+  CH.markArrived(state.arrived, m, now()); // every height this pass applied reached this tab now
   document.title = `Bight · txbt4 · ${n(m.height)}`;
   pill();
   wantBlocks();
   askTemplate();
 });
 function wantBlocks() {
-  if (node.height == null) return;
-  const t = Date.now();
-  for (let h = node.height; h > node.height - 8 && h > SNAP_BASE; h--)
-    if (!state.blocks.has(h) && !(t - (state.wanted.get(h) ?? 0) < 30e3)) {
-      state.wanted.set(h, t); // asked again after 30 s if no answer came (a reply that failed carries no request id)
-      tn.post({ type: 'block', height: h, req: 'bight' });
-    }
+  if (state.wiped || !state.running) return;
+  for (const h of CH.wantHeights({ height: node.height, blocks: state.blocks, wanted: state.wanted, now: Date.now(), floor: SNAP_BASE }))
+    tn.post({ type: 'block', height: h, req: 'bight' });
   scheduleRender();
 }
 tn.on('block', (m) => {
-  if (m.req !== 'bight') return;
+  if (m.req !== 'bight' || state.wiped) return;
   state.wanted.delete(m.height);
-  // the block below, cached earlier, is not the one this block builds on: it was replaced
-  const below = state.blocks.get(m.height - 1);
-  if (below && m.previousblockhash && below.hash !== m.previousblockhash) state.blocks.delete(m.height - 1);
-  state.blocks.set(m.height, {
-    height: m.height,
-    hash: m.hash,
-    prev: m.previousblockhash,
-    time: m.header.time,
-    nTx: m.nTx,
-    size: m.size,
-    txids: m.txids,
-    arrivedAt: state.tipSeenAt.get(m.height) ?? null,
-  });
+  const kept = CH.acceptBlock(
+    state.blocks,
+    {
+      height: m.height,
+      hash: m.hash,
+      prev: m.previousblockhash,
+      time: m.header?.time ?? null,
+      nTx: m.nTx,
+      size: m.size,
+      txids: m.txids ?? [],
+      arrivedAt: state.arrived.get(m.height) ?? null,
+    },
+    { tipHeight: node.height, tipHash: node.hash },
+  );
+  if (!kept) return;
   if (state.blocks.size > 40) state.blocks.delete(Math.min(...state.blocks.keys()));
   scheduleRender();
-  if (state.selected === m.height) showBlock(m.height);
+  if (state.selected === m.height && !$('detail').contains(document.activeElement)) showBlock(m.height, { focus: false });
 });
 
 // ---- the mempool: the loader keeps node.mempool; the page remembers every txid it accepted
-tn.on('mempool', (m) => {
+tn.on('mempool', () => {
   state.followedAt ??= now();
-  SE.rememberSeen(state.seenTx, m.txs);
+  SE.rememberSeen(state.seenTx, list());
   scheduleRender();
   askTemplate();
 });
 // the worker's own block for the next height: asked at most every 2 s, and within 2 s of a change however busy the mempool
-let tplTimer = null,
-  tplLast = 0;
-function askTemplate() {
-  if (!node.synced || state.wiped || tplTimer) return;
-  const wait = Math.max(0, 2000 - (Date.now() - tplLast));
-  tplTimer = setTimeout(() => {
-    tplTimer = null;
-    tplLast = Date.now();
-    tn.post({ type: 'template', pay: '6a00' });
-  }, wait);
-}
+const askTemplate = (() => {
+  const go = SD.throttle(() => tn.post({ type: 'template', pay: '6a00' }), 2000);
+  return () => node.synced && !state.wiped && go();
+})();
 tn.on('template', (m) => {
   state.template = m;
   scheduleRender();
@@ -292,117 +346,193 @@ document.addEventListener('visibilitychange', () => {
 });
 function renderAll() {
   state.dirty = false;
-  if (state.wiped) return;
-  const blocks = node.mempool ? P.packBlocks(node.mempool.txs, { rdts: state.template?.rdts ?? true }) : [];
+  if (state.wiped || state.idle) return;
+  const blocks = node.mempool ? P.packBlocks(list(), { rdts: state.template?.rdts ?? true }) : [];
   renderProjected(blocks);
   renderMempool(blocks);
   renderMined();
   pill();
 }
-
-const feeColor = (rate) => {
-  const h = F.feeHue(rate ?? 1);
-  return [`hsl(${h} 70% 55%)`, `hsl(${h} 70% 38%)`];
-};
-function renderProjected(blocks) {
-  const el = $('proj');
-  const tw = NT.templateWords(state.template, node.height);
-  if (!blocks.length) {
-    el.innerHTML = `<div class="blk empty"><div class="h">next block</div><div class="s">${node.mempool ? 'the mempool is empty' : 'the mempool is followed once the tab is up to date'}</div></div>`;
-    return;
+// patch a row of tiles in place: one <button> per key, its content and name updated, moved only when out of place, so
+// the focused one keeps the focus
+function patchTiles(container, items) {
+  const have = new Map([...container.children].map((el) => [el.dataset.k, el]));
+  let at = container.firstChild;
+  for (const it of items) {
+    let el = have.get(it.key);
+    if (!el) {
+      el = document.createElement(it.tag ?? 'button');
+      if (el.tagName === 'BUTTON') el.type = 'button';
+      el.dataset.k = it.key;
+    }
+    have.delete(it.key);
+    if (el.className !== it.cls) el.className = it.cls;
+    if (el.dataset.html !== it.html) {
+      el.innerHTML = it.html;
+      el.dataset.html = it.html;
+    }
+    if (it.label != null) el.setAttribute('aria-label', it.label);
+    if (it.expanded != null) {
+      el.setAttribute('aria-expanded', String(it.expanded));
+      el.setAttribute('aria-controls', 'detail');
+    }
+    for (const [k, v] of Object.entries(it.style ?? {})) el.style.setProperty(k, v);
+    el.onclick = it.onActivate ?? null;
+    if (el !== at) container.insertBefore(el, at);
+    else at = at.nextSibling;
+    if (el === at) at = at.nextSibling;
   }
-  const cov = P.coverage(node.mempool);
-  el.innerHTML =
-    blocks
-      .map((b, i) => {
-        const [c1, c2] = feeColor(b.wmed);
-        // block 0 carries the worker's own figures when its build is current and passes every rule
-        const built = i === 0 && tw.ok ? state.template : null;
-        return `<div class="blk proj" style="--c1:${c1};--c2:${c2}" data-p="${i}" tabindex="0" role="button" aria-label="${esc(etaWords(i))}: about ${esc(b.wmed?.toFixed(1))} sat per vB"><div><div class="h">${esc(etaWords(i))}</div><div class="r">~${esc(b.wmed?.toFixed(1))} sat/vB</div></div><div><div class="s">${esc(b.min.toFixed(0))} – ${esc(b.max.toFixed(0))} sat/vB</div><div class="s">${built ? `${esc(n(built.txs))} tx · ${esc(n(built.weight))} WU` : `${esc(n(b.vsize))} vB · ${esc(n(b.txs.length))} tx`}</div><div class="s">${built ? `${esc(n(built.fees))} sat · as built` : `${esc(n(b.fees))} sat fees`}${i === 0 && tw.failed ? ' · build fails' : ''}</div></div></div>`;
-      })
-      .join('') +
-    (cov.truncated
-      ? `<div class="blk empty more"><div class="h">more</div><div class="s">${esc(n(Math.max(0, cov.totalVb - cov.shownVb)))} vB more in the mempool than this page sees</div></div>`
-      : '');
-  el.querySelectorAll('.blk.proj').forEach((d) => {
-    const go = () => showProjected(blocks[Number(d.dataset.p)], Number(d.dataset.p));
-    d.onclick = go;
-    d.onkeydown = (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), go());
-  });
+  for (const el of have.values()) el.remove();
+}
+function renderProjected(blocks) {
+  const tw = NT.templateWords(state.template, node.height, node.hash);
+  const items = [];
+  if (!blocks.length) {
+    const e = V.emptyNextTile({
+      built: !!node.mempool && tw.ok,
+      words: ST.emptyWords(node.mempool, { following: state.following }) ?? 'the mempool is empty',
+    });
+    items.push({ key: 'empty', cls: 'blk empty', html: e.html, label: e.label, tag: 'div' });
+  } else {
+    const cov = P.coverage(node.mempool);
+    if (cov.truncated)
+      items.push({
+        key: 'more',
+        cls: 'blk empty more',
+        tag: 'div',
+        html: `<span class="h">more</span><span class="s">${esc(n(Math.max(0, cov.totalVb - cov.shownVb)))} vB more in the mempool than this page sees</span>`,
+      });
+    // in the order they read: the furthest projection first, the next block beside the chain tip
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      const b = blocks[i];
+      const built = i === 0 && tw.ok ? state.template : null;
+      const t = V.projTile(b, i, { built, failed: i === 0 && !!tw.failed });
+      const c = F.feeColors(b.wmed);
+      items.push({
+        key: 'p' + i,
+        cls: 'blk proj',
+        html: t.html,
+        label: t.label,
+        style: { '--c1': c.c1, '--c2': c.c2 },
+        onActivate: () => showProjected(b, i),
+      });
+    }
+  }
+  patchTiles($('proj'), items);
+  state.lastBlocks = blocks;
 }
 function renderMined() {
   const hs = [...state.blocks.keys()].sort((a, b) => b - a).slice(0, 8);
   const sh = ST.signedHeight(node.nostr);
-  $('mined').innerHTML = hs.length
-    ? hs
-        .map((h) => {
-          const b = state.blocks.get(h);
-          const known = b.txids.map((t) => state.seenTx.get(t)).filter(Boolean);
-          const med = P.median(known.map((f) => f.feeRate));
-          const age = Math.max(0, now() - b.time);
-          const sw = SE.blockSeen(b, state.seenTx, { followedAt: state.followedAt });
-          const unsigned = sh != null && h > sh;
-          return `<div class="blk mined${state.selected === h ? ' sel' : ''}${unsigned ? ' unsigned' : ''}" data-h="${h}" tabindex="0" role="button" aria-label="block ${esc(n(h))}${unsigned ? ', not yet signed' : ''}"><div><div class="h">${esc(n(h))}</div><div class="r">${med != null ? '~' + esc(med.toFixed(1)) + ' sat/vB' : ''}</div></div><div><div class="s">${esc(n(b.size))} B · ${esc(n(b.nTx))} tx</div><div class="s">${esc(sw.words)}</div><div class="s">${unsigned ? 'not signed yet' : `${esc(fmtAge(age))} ago`}</div></div></div>`;
-        })
-        .join('')
-    : `<div class="blk empty"><div class="h">last blocks</div><div class="s">appear once the tab is up to date</div></div>`;
-  $('mined')
-    .querySelectorAll('.blk.mined')
-    .forEach((d) => {
-      const go = () => showBlock(Number(d.dataset.h));
-      d.onclick = go;
-      d.onkeydown = (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), go());
-    });
+  if (!hs.length) {
+    patchTiles($('mined'), [
+      {
+        key: 'empty',
+        cls: 'blk empty',
+        tag: 'div',
+        html: '<span class="h">last blocks</span><span class="s">appear once the tab is up to date</span>',
+      },
+    ]);
+    return;
+  }
+  patchTiles(
+    $('mined'),
+    hs.map((h) => {
+      const b = state.blocks.get(h);
+      const known = b.txids
+        .slice(1)
+        .map((t) => state.seenTx.get(t))
+        .filter(Boolean);
+      const sw = SE.blockSeen(b, state.seenTx, { followedAt: state.followedAt, prevArrivedAt: state.arrived.get(h - 1) ?? null });
+      const unsigned = sh == null || h > sh;
+      const t = V.minedTile(b, {
+        med: P.weightedMedian(known),
+        known: known.length,
+        others: sw.others,
+        seenWords: sw.words,
+        unsigned,
+        ageS: Math.max(0, now() - (b.time ?? now())),
+      });
+      return {
+        key: 'h' + h,
+        cls: `blk mined${state.selected === h ? ' sel' : ''}${unsigned ? ' unsigned' : ''}`,
+        html: t.html,
+        label: t.label,
+        expanded: state.selected === h,
+        onActivate: () => showBlock(h),
+      };
+    }),
+  );
 }
-function showBlock(h) {
+// the detail panel takes the focus when it opens and gives it back to what opened it when it closes
+function openDetail(html, opener, { focus = true } = {}) {
+  const d = $('detail');
+  d.hidden = false;
+  d.innerHTML = html + '<div class="dfoot"><button class="btn" type="button" id="dclose">Close</button></div>';
+  state.opener = opener;
+  $('dclose').onclick = closeDetail;
+  if (focus) d.focus();
+  const h = d.querySelector('#dtitle');
+  if (h) say(h.textContent);
+}
+function closeDetail() {
+  $('detail').hidden = true;
+  const o = state.opener;
+  state.selected = null;
+  renderMined();
+  const back = o?.kind === 'q' ? $('q') : o ? document.querySelector(`[data-k="${o.kind}${o.key}"]`) : null;
+  (back ?? $('q')).focus();
+}
+function showBlock(h, { focus = true, foundTxid = null } = {}) {
   const b = state.blocks.get(h);
   if (!b) return;
   state.selected = h;
   renderMined();
-  const sw = SE.blockSeen(b, state.seenTx, { followedAt: state.followedAt });
-  const mpIds = new Set((node.mempool?.txs ?? []).map((x) => x.txid));
-  const inMp = b.txids.filter((t) => mpIds.has(t)).length;
+  const sw = SE.blockSeen(b, state.seenTx, { followedAt: state.followedAt, prevArrivedAt: state.arrived.get(h - 1) ?? null });
+  const mpIds = new Set(list().map((x) => x.txid));
   const sh = ST.signedHeight(node.nostr);
-  $('detail').hidden = false;
-  $('detail').innerHTML =
-    `<h2>Block ${esc(n(h))}</h2><div class="kv"><span class="l">Hash</span><span class="v" style="text-align:left"><a href="${esc(blockUrl(b.hash))}" target="_blank" rel="noopener">${esc(b.hash)}</a></span><span class="l">Time (the miner's)</span><span class="v">${esc(new Date(b.time * 1000).toLocaleString())}</span><span class="l">Transactions</span><span class="v">${esc(n(b.nTx))} (${esc(n(b.size))} bytes)</span><span class="l">Seen in this tab's mempool first</span><span class="v">${esc(sw.counted ? `${sw.seen} of ${sw.others}` : sw.words)}${inMp ? ` · ${inMp} still listed until the next check` : ''}</span>${sw.knownCount ? `<span class="l">Fees this tab knew</span><span class="v">${esc(n(sw.knownFees))} sat over ${esc(sw.knownCount)} tx</span>` : ''}<span class="l">Validated by</span><span class="v">this tab · ${sh == null ? 'no signed chain tip to check it against' : h > sh ? 'above the signed chain tip: not yet signed' : 'signed chain tip agrees'}</span></div>
-  ${sw.knownCount < sw.others ? `<div class="note" style="margin-top:8px">Fees are shown for the transactions this tab had in its mempool before the block; a UTXO node keeps no history for the rest.</div>` : ''}<table style="margin-top:10px"><thead><tr><th scope="col">Transaction</th><th scope="col" class="amt">vB</th><th scope="col" class="amt">Fee</th><th scope="col" class="amt">sat/vB</th><th scope="col">Seen</th></tr></thead><tbody>${b.txids
-    .map((t, i) => {
-      const f = state.seenTx.get(t);
-      return `<tr><td class="mono" title="${esc(t)}"><a href="${esc(txUrl(t))}" target="_blank" rel="noopener" style="color:inherit">${esc(t.slice(0, 20))}…</a>${i === 0 ? ' <span class="mut">coinbase</span>' : ''}</td><td class="amt">${f ? esc(n(f.vsize)) : '—'}</td><td class="amt">${f ? esc(n(f.fee)) : '—'}</td><td class="amt">${f ? esc(f.feeRate.toFixed(1)) : '—'}</td><td>${f ? esc(fmtAge(Math.max(0, (b.arrivedAt ?? b.time) - f.at))) + ' before the block' : i === 0 ? '' : 'never'}</td></tr>`;
-    })
-    .join('')}</tbody></table><div style="margin-top:8px"><button class="btn" id="dclose">Close</button></div>`;
-  $('dclose').onclick = () => {
-    $('detail').hidden = true;
-    state.selected = null;
-    renderMined();
-  };
+  openDetail(
+    V.blockDetail(b, {
+      sw,
+      seenTx: state.seenTx,
+      signedWords:
+        sh == null
+          ? 'no signed chain tip to check it against yet'
+          : h > sh
+            ? 'above the signed chain tip: not yet signed'
+            : 'the signed chain tip agrees',
+      inMempool: b.txids.filter((t) => mpIds.has(t)).length,
+      foundTxid,
+    }),
+    foundTxid ? { kind: 'q' } : { kind: 'h', key: h },
+    { focus },
+  );
 }
 function showProjected(b, i) {
   state.selected = null;
   renderMined();
-  const tw = NT.templateWords(state.template, node.height);
-  $('detail').hidden = false;
-  $('detail').innerHTML =
-    `<h2>${i === 0 ? 'The next block, as this tab would build it' : `Projected block ${i + 1}`} <span class="mut" style="text-transform:none;letter-spacing:0">as of ${esc(new Date().toLocaleTimeString())}</span></h2><div class="kv"><span class="l">Transactions</span><span class="v">${esc(n(b.txs.length))} · ${esc(n(b.vsize))} vB</span><span class="l">Fees</span><span class="v">${esc(n(b.fees))} sat</span><span class="l">Fee rates</span><span class="v">${esc(b.min.toFixed(1))} – ${esc(b.max.toFixed(1))} sat/vB, median ${esc(b.wmed.toFixed(1))} (by size)</span>${i === 0 && state.template ? `<span class="l">The worker's own build</span><span class="v">${esc(tw.text)}${tw.stale ? '' : ` at height ${esc(n(state.template.height))}`}</span>` : ''}</div><div class="note" style="margin-top:8px">Packed by fee rate from the transactions this page sees, the way the node builds its block: what does not fit is skipped and the next tried. The first is also built in full by the node worker (coinbase, witness commitment, header) and checked against every block rule it knows; its figures are shown when that build passes.</div><table style="margin-top:10px"><thead><tr><th scope="col">Transaction</th><th scope="col" class="amt">vB</th><th scope="col" class="amt">Fee</th><th scope="col" class="amt">sat/vB</th></tr></thead><tbody>${b.txs
-      .slice(0, 200)
-      .map(
-        (t) =>
-          `<tr><td class="mono" title="${esc(t.txid)}">${esc(t.txid.slice(0, 20))}…</td><td class="amt">${esc(n(t.vsize))}</td><td class="amt">${esc(n(t.fee))}</td><td class="amt">${esc(t.feeRate.toFixed(1))}</td></tr>`,
-      )
-      .join('')}</tbody></table><div style="margin-top:8px"><button class="btn" id="dclose">Close</button></div>`;
-  $('dclose').onclick = () => {
-    $('detail').hidden = true;
-  };
+  const tw = NT.templateWords(state.template, node.height, node.hash);
+  openDetail(
+    V.projDetail(b, i, {
+      tw: i === 0 && state.template ? tw : null,
+      built: tw.ok ? state.template : null,
+      asOf: new Date().toLocaleTimeString(),
+    }),
+    {
+      kind: 'p',
+      key: i,
+    },
+  );
 }
 
 // ---- the mempool panel, the histogram, the table
 function renderMempool(blocks) {
   const m = node.mempool;
   if (!m) return;
+  const all = list();
   const cov = P.coverage(m);
-  const wmed = P.weightedMedian(m.txs);
-  const tw = NT.templateWords(state.template, node.height);
+  const wmed = P.weightedMedian(all);
+  const tw = NT.templateWords(state.template, node.height, node.hash);
   $('m-count').textContent = n(m.count);
   $('m-size').textContent = `${n(m.bytes)} vB`;
   $('m-fees').textContent = `${n(m.fees)} sat`;
@@ -416,33 +546,103 @@ function renderMempool(blocks) {
   $('s-acc').textContent = n(m.stats.accepted);
   $('s-ref').textContent = n(m.stats.refused);
   $('s-drop').textContent = n(m.stats.dropped);
-  $('s-feed').textContent = m.lastFeedAt
-    ? `${fmtAge(Math.max(0, now() - Math.floor(m.lastFeedAt / 1000)))} ago`
+  $('s-feed').textContent = m.feedFileAt
+    ? `${fmtAge(Math.max(0, now() - Math.floor(m.feedFileAt / 1000)))} ago`
     : m.following
       ? 'not yet'
       : '…';
-  const counts = F.histogram(m.txs);
+  $('s-feedtx').textContent = m.lastFeedAt ? `${fmtAge(Math.max(0, now() - Math.floor(m.lastFeedAt / 1000)))} ago` : 'none yet';
+  // the bands: bars for the eye, a table for a screen reader
+  const counts = F.histogram(all);
   const max = Math.max(1, ...counts);
-  $('hist').innerHTML = F.BANDS.map(
+  const bars = F.BANDS.map(
     (b, i) =>
       `<div style="height:${((counts[i] / max) * 100).toFixed(1)}%" title="${esc(F.bandLabel(i))} sat/vB: ${esc(n(counts[i]))} vB"><span>${i % 2 ? '' : i === 0 ? '<1' : b}</span></div>`,
   ).join('');
+  if ($('hist').dataset.html !== bars) {
+    $('hist').innerHTML = bars;
+    $('hist').dataset.html = bars;
+    const top = counts
+      .map((c, i) => [c, i])
+      .filter(([c]) => c > 0)
+      .sort((a, b) => b[0] - a[0])
+      .slice(0, 3);
+    $('hist').setAttribute(
+      'aria-label',
+      top.length
+        ? `vB by fee rate; the largest bands: ${top.map(([c, i]) => `${F.bandLabel(i)} sat/vB, ${n(c)} vB`).join('; ')}`
+        : 'vB by fee rate: none',
+    );
+    $('histtbl').innerHTML = F.BANDS.map((_, i) => `<tr><td>${esc(F.bandLabel(i))}</td><td>${esc(n(counts[i]))}</td></tr>`).join('');
+  }
+  renderRows(all, blocks);
+}
+// the table: rows keyed by txid and patched in place; the age cell is updated on its own, so a row's link or a text
+// selection in it survives the next update
+function renderRows(all, blocks) {
+  const tb = $('rows');
+  const sel = getSelection();
+  if (sel && !sel.isCollapsed && tb.contains(sel.anchorNode)) return; // someone is selecting a txid: leave it
   const blockOf = P.blockIndex(blocks);
   const t0 = now();
-  $('rows').innerHTML = m.txs.length
-    ? [...m.txs]
-        .sort((a, b) => b.at - a.at)
-        .slice(0, 300)
-        .map((t) => {
-          const i = blockOf.get(t.txid);
-          return `<tr data-t="${esc(t.txid)}"${state.highlight === t.txid ? ' class="hi"' : ''}><td class="mono" title="${esc(t.txid)}"><a href="${esc(txUrl(t.txid))}" target="_blank" rel="noopener" style="color:inherit">${esc(t.txid.slice(0, 24))}…</a></td><td>${esc(fmtAge(Math.max(0, t0 - t.at)))}</td><td class="amt">${esc(n(t.vsize))}</td><td class="amt">${esc(n(t.fee))}</td><td class="amt">${esc(t.feeRate.toFixed(1))}</td><td>${i == null ? 'later' : i === 0 ? 'next' : `#${i + 1}`}</td></tr>`;
-        })
-        .join('')
-    : '<tr><td colspan="6" class="mut">empty</td></tr>';
+  const rows = [...all].sort((a, b) => b.at - a.at).slice(0, 300);
+  if (!rows.length) {
+    tb.innerHTML = `<tr><td colspan="6" class="mut">${esc(ST.emptyWords(node.mempool, { following: state.following }) ?? 'empty')}</td></tr>`;
+    return;
+  }
+  const have = new Map([...tb.querySelectorAll('tr[data-t]')].map((tr) => [tr.dataset.t, tr]));
+  [...tb.querySelectorAll('tr:not([data-t])')].forEach((tr) => tr.remove());
+  let at = tb.firstChild;
+  for (const t of rows) {
+    let tr = have.get(t.txid);
+    const i = blockOf.get(t.txid);
+    const html = `<td class="mono"><button type="button" class="txbtn" data-open="${esc(t.txid)}">${esc(t.txid.slice(0, 20))}…</button> <a class="ext" href="${esc(txUrl(t.txid))}" target="_blank" rel="noopener" aria-label="transaction ${esc(t.txid.slice(0, 12))} on mempool.guide (another site, not checked by this tab)" title="on mempool.guide: another site, not checked by this tab">↗</a></td><td class="age"></td><td class="amt">${esc(n(t.vsize))}</td><td class="amt">${esc(n(t.fee))}</td><td class="amt">${esc(t.feeRate.toFixed(1))}</td><td>${i == null ? 'later' : i === 0 ? 'next' : `#${i + 1}`}</td>`;
+    if (!tr) {
+      tr = document.createElement('tr');
+      tr.dataset.t = t.txid;
+    }
+    have.delete(t.txid);
+    if (tr.dataset.html !== html) {
+      tr.innerHTML = html;
+      tr.dataset.html = html;
+    }
+    tr.classList.toggle('hi', state.highlight === t.txid);
+    tr.querySelector('.age').textContent = fmtAge(Math.max(0, t0 - t.at));
+    if (tr !== at) tb.insertBefore(tr, at);
+    else at = at.nextSibling;
+    if (tr === at) at = at.nextSibling;
+  }
+  for (const tr of have.values()) if (!tr.contains(document.activeElement)) tr.remove();
+}
+$('rows').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-open]');
+  if (b) openTx(b.dataset.open, { kind: 'q' });
+});
+// one transaction of the mempool, in the page: from the full copy the node sent when it has one, else asked of the node
+function openTx(txid, opener) {
+  const full = (node.mempool?.txs ?? []).find((x) => x.txid === txid);
+  state.highlight = txid;
+  scheduleRender();
+  if (full) return openDetail(V.mempoolTxDetail(full), opener);
+  state.pendingTx = { txid, opener };
+  tn.post({ type: 'mempool-get', txid, req: 'bight' });
+  openDetail(`<h2 id="dtitle">In this tab's mempool</h2><p class="mut">asking the node for ${esc(txid.slice(0, 20))}…</p>`, opener);
+}
+function onMempoolTx(m) {
+  if (m.req !== 'bight' || state.pendingTx?.txid !== m.txid) return;
+  const { opener } = state.pendingTx;
+  state.pendingTx = null;
+  openDetail(
+    m.found
+      ? V.mempoolTxDetail(m)
+      : `<h2 id="dtitle">Not found</h2><p class="mut">no longer in this tab's mempool: confirmed or dropped</p>`,
+    opener,
+  );
 }
 // every 5 s: a sample for the graph, and the ages
 setInterval(() => {
-  if (node.mempool && !state.wiped) {
+  if (state.wiped || state.idle) return;
+  if (node.mempool) {
     SR.pushSample(state.samples, { t: Date.now(), count: node.mempool.count, vb: node.mempool.bytes });
     if (!document.hidden) drawGraph();
   }
@@ -457,9 +657,19 @@ function drawGraph() {
   g.clearRect(0, 0, W, H);
   const s = state.samples;
   $('gspan').textContent = SR.spanWords(s);
-  if (s.length < 2) return;
   const cs = getComputedStyle(document.documentElement);
   const cv = (k, d) => cs.getPropertyValue(k).trim() || d;
+  if (s.length < 2) {
+    g.fillStyle = cv('--mut', '#8d92ab');
+    g.font = `${12 * devicePixelRatio}px system-ui,sans-serif`;
+    g.fillText(
+      state.idle ? 'the graph runs where the node runs' : 'collecting: a point every 5 s',
+      8 * devicePixelRatio,
+      20 * devicePixelRatio,
+    );
+    c.setAttribute('aria-label', 'Mempool over time: collecting, a point every 5 seconds');
+    return;
+  }
   const pad = 6 * devicePixelRatio;
   g.strokeStyle = cv('--grid', '#2a2f47');
   g.lineWidth = devicePixelRatio;
@@ -469,53 +679,51 @@ function drawGraph() {
     g.lineTo(W - pad, (H * i) / 4);
     g.stroke();
   }
-  const draw = (key, color) => {
-    const { runs, max } = SR.polyline(s, key, { W, H, pad });
+  const draw = (key, color, dash) => {
+    const { runs, top } = SR.polyline(s, key, { W, H, pad });
     g.strokeStyle = color;
     g.lineWidth = 1.5 * devicePixelRatio;
+    g.setLineDash(dash.map((x) => x * devicePixelRatio));
     for (const r of runs) {
       g.beginPath();
       r.forEach(([X, Y], i) => (i ? g.lineTo(X, Y) : g.moveTo(X, Y)));
       g.stroke();
     }
-    return max;
+    g.setLineDash([]);
+    return top;
   };
-  const maxVb = draw('vb', cv('--acc', '#f0a04b'));
-  const maxN = draw('count', cv('--blue', '#4a90e2'));
-  $('gmax').textContent = `top of the graph: ${n(maxN)} transactions, ${n(maxVb)} vB`;
+  const maxVb = draw('vb', cv('--acc', '#f0a04b'), [5, 4]);
+  const maxN = draw('count', cv('--blue', '#4a90e2'), []);
+  $('gmax').textContent = maxN || maxVb ? `top of the graph: ${n(maxN)} transactions, ${n(maxVb)} vB` : 'empty all the time shown';
   c.setAttribute(
     'aria-label',
     `Mempool over ${SR.spanWords(s)}: now ${n(s.at(-1).count)} transactions and ${n(s.at(-1).vb)} vB; at most ${n(maxN)} and ${n(maxVb)}`,
   );
 }
 
-// ---- search: the mempool this page sees, then the blocks it has looked at, then what it has seen
+// ---- search: a txid (or its start), a block hash or height; the mempool, then the blocks this tab holds, then what it saw
 $('search').onsubmit = (e) => {
   e.preventDefault();
   const pq = SC.parseQuery($('q').value);
-  $('detail').hidden = false;
+  state.selected = null;
+  if (state.idle)
+    return openDetail(
+      `<h2 id="dtitle">Search</h2><p class="mut">This tab is idle: the node and its mempool are in the other tab. Search there.</p>`,
+      { kind: 'q' },
+    );
   if (pq.error) {
     state.highlight = null;
-    $('detail').innerHTML = `<h2>Search</h2><div class="mut">${esc(pq.error)}</div>`;
-    return;
+    return openDetail(`<h2 id="dtitle">Search</h2><p class="mut">${esc(pq.error)}</p>`, { kind: 'q' });
   }
-  const t = pq.txid;
-  const r = SC.locate(t, { mempool: node.mempool, blocks: [...state.blocks.values()], seen: state.seenTx });
-  state.highlight = r.where === 'mempool' ? t : null;
+  const r = SC.locate(pq, { list: list(), blocks: [...state.blocks.values()], seen: state.seenTx });
+  state.highlight = r.where === 'mempool' ? r.tx.txid : null;
   scheduleRender();
-  if (r.where === 'mempool') {
-    const mp = r.tx;
-    $('detail').innerHTML =
-      `<h2>In this tab's mempool</h2><div class="kv"><span class="l">Transaction</span><span class="v" style="text-align:left"><a href="${esc(txUrl(t))}" target="_blank" rel="noopener">${esc(t)}</a></span><span class="l">Size</span><span class="v">${esc(n(mp.vsize))} vB</span><span class="l">Fee</span><span class="v">${esc(n(mp.fee))} sat · ${esc(mp.feeRate.toFixed(1))} sat/vB</span><span class="l">Heard</span><span class="v">${esc(new Date(mp.at * 1000).toLocaleTimeString())}</span><span class="l">Inputs</span><span class="v" style="text-align:left">${mp.inputs.map((k) => esc(k.slice(0, 16)) + '…:' + esc(k.split(':')[1])).join(', ')}</span><span class="l">Outputs</span><span class="v" style="text-align:left">${mp.outputs.map((o) => `${esc(n(o.value))} sat → ${esc(o.scriptPubKey.slice(0, 20))}…`).join('<br>')}</span></div>`;
-  } else if (r.where === 'block') showBlock(r.height);
+  if (r.where === 'mempool') openTx(r.tx.txid, { kind: 'q' });
+  else if (r.where === 'block') showBlock(r.height, { foundTxid: r.txid ?? null });
   else
-    $('detail').innerHTML = `<h2>Not found</h2><div class="mut">${esc(
-      r.where === 'seen'
-        ? `this tab had it in its mempool at ${new Date(r.seen.at * 1000).toLocaleTimeString()} (${n(r.seen.vsize)} vB, ${r.seen.feeRate.toFixed(1)} sat/vB); it has since been confirmed or dropped`
-        : r.partial
-          ? `not among the ${n(node.mempool.txs.length)} transactions this page sees (the tab's mempool has ${n(node.mempool.count)}), and not in the last blocks it looked at`
-          : "not in this tab's mempool, and not in the last blocks it looked at; a tab keeps no history beyond that",
-    )}</div>`;
+    openDetail(`<h2 id="dtitle">Not found</h2><p class="mut">${esc(V.notFoundWords(r, { count: node.mempool?.count ?? 0 }))}</p>`, {
+      kind: 'q',
+    });
 };
 
 // ---- theme
@@ -523,8 +731,21 @@ $('theme').onclick = () => {
   const el = document.documentElement;
   el.dataset.theme = el.dataset.theme === 'light' ? 'dark' : 'light';
   LS.set('bight:theme', el.dataset.theme);
+  themeButton();
   drawGraph();
 };
+const themeButton = () => {
+  const light = document.documentElement.dataset.theme === 'light';
+  $('theme').setAttribute('aria-label', light ? 'Switch to the dark theme' : 'Switch to the light theme');
+};
+themeButton();
+// with no choice stored, the theme follows the system's, also when it changes
+matchMedia('(prefers-color-scheme: light)').addEventListener?.('change', (e) => {
+  if (LS.get('bight:theme')) return;
+  document.documentElement.dataset.theme = e.matches ? 'light' : 'dark';
+  themeButton();
+  drawGraph();
+});
 
 // ---- settings: filled from what is stored (never from a link); only what the person changed is written
 const fillSettings = (src = SRC.stored, opt = OPT) => {
@@ -533,6 +754,11 @@ const fillSettings = (src = SRC.stored, opt = OPT) => {
   $('o-torrent').checked = !!opt.torrent;
   $('o-seed').checked = !!opt.seed;
   $('o-err').textContent = '';
+  $('o-snapnote').textContent = '';
+};
+$('o-snapshot').oninput = () => {
+  $('o-snapnote').textContent =
+    $('o-snapshot').value.trim() !== SRC.stored.snapshot ? 'saving a different snapshot fetches it again: 830 MB' : '';
 };
 $('settings').onclick = () => {
   fillSettings();
@@ -543,6 +769,7 @@ $('settings').onclick = () => {
       : '';
   $('o-wipe').disabled = !state.running || top !== self; // never from a frame: a page around it could make the click
   delete $('o-wipe').dataset.armed;
+  $('o-wipe').removeAttribute('aria-describedby');
   tn.seedSupported?.().then((yes) => {
     if (yes === false) {
       $('o-seed').checked = false;
@@ -561,12 +788,15 @@ $('o-wipe').onclick = () => {
     Promise.resolve(tn.wipe()).then(
       (r) => {
         state.wiped = true;
+        // the files are gone, so is the answer to "may I download 830 MB": the next visit asks again
+        LS.del('reef:started');
+        LS.del('bight:started');
         $('dlg').close();
         const left = r?.failed?.length ? ` These could not be removed: ${r.failed.join(', ')}.` : '';
         banner(
           'wiped',
           'bad',
-          `The node's files are removed; nothing more is shown until you reload, which fetches the snapshot again.${left}`,
+          `The node's files are removed; nothing more is shown until you reload, which asks before fetching the snapshot again.${left}`,
           [['Reload', () => location.reload()]],
         );
         pill();
@@ -579,13 +809,14 @@ $('o-wipe').onclick = () => {
     $('o-wipe').dataset.armed = '1';
     $('o-wipenote').textContent =
       "press again: this removes the node's files for Reef, Winch and Hitch in this browser too (the key in Reef is not touched)";
+    $('o-wipe').setAttribute('aria-describedby', 'o-wipenote');
   }
 };
 $('o-ok').onclick = () => {
   const s = $('o-snapshot').value.trim(),
     b = $('o-blocks').value.trim();
   if ((s && !SO.validUrl(s)) || (b && !SO.validUrl(b))) {
-    $('o-err').textContent = 'Only https:// addresses can be used for the snapshot and the blocks.';
+    $('o-err').textContent = 'Only https:// addresses can be used for the snapshot and the blocks (an empty field means the default).';
     return;
   }
   OPT.torrent = $('o-torrent').checked;
@@ -593,21 +824,20 @@ $('o-ok').onclick = () => {
   LS.set('bight:options', JSON.stringify(OPT));
   tn.setTorrent(OPT.torrent);
   tn.setSeed(OPT.seed);
-  // only a field the person changed is written; the defaults are not stored
-  let reload = false;
-  for (const [k, v, def] of [
-    ['snapshot', s, SO.DEFAULT_SNAP],
-    ['blocks', b, SO.DEFAULT_BLOCKS],
-  ])
-    if (v && v !== SRC.stored[k]) {
-      v === def ? LS.del('bight:' + k) : LS.set('bight:' + k, v);
-      reload = true;
-    }
+  const w = SET.sourceWrites({
+    fields: { snapshot: s, blocks: b },
+    bight: { snapshot: SO.validUrl(LS.get('bight:snapshot')), blocks: SO.validUrl(LS.get('bight:blocks')) },
+    reef: { snapshot: SO.validUrl(LS.get('reef:snapshot')), blocks: SO.validUrl(LS.get('reef:blocks')) },
+    defaults: { snapshot: SO.DEFAULT_SNAP, blocks: SO.DEFAULT_BLOCKS },
+  });
+  for (const x of w) x.del ? LS.del(x.key) : LS.set(x.key, x.set);
   $('dlg').close();
-  if (reload) location.replace(location.pathname);
+  if (w.length) reloadWith({}, ['snapshot', 'blocks']);
 };
 $('o-diag').onclick = async () => {
   const est = await navigator.storage?.estimate?.().catch(() => null);
+  const persisted = await navigator.storage?.persisted?.().catch(() => null);
+  const locks = await navigator.locks?.query?.().catch(() => null);
   const d = {
     bight: VERSION,
     node: NODE.slice(-40),
@@ -616,28 +846,40 @@ $('o-diag').onclick = async () => {
     phase: node.phase,
     synced: !!node.synced,
     height: node.height,
-    error: node.error ?? null,
-    lastError: node.lastError ?? null,
+    error: node.error ? String(node.error).replace(/https?:\/\/\S+/g, '<url>') : null,
+    lastError: node.lastError ? { ...node.lastError, text: String(node.lastError.text ?? '').replace(/https?:\/\/\S+/g, '<url>') } : null,
+    unresponsive: !!node.unresponsive,
+    lockError: node.lockError ?? null,
+    retryAt: node.retryAt ?? null,
+    lockHeld: locks ? (locks.held ?? []).some((l) => l.name === 'bitcoin-blake:node') : null,
     hist: node.hist,
     nostr: node.nostr
-      ? { height: node.nostr.height, agree: node.nostr.agree, diverged: !!node.nostr.diverged, live: !!node.nostr.live }
+      ? {
+          height: node.nostr.height,
+          agree: node.nostr.agree,
+          diverged: !!node.nostr.diverged,
+          live: !!node.nostr.live,
+          kept: !!node.nostr.kept,
+        }
       : null,
     mempool: node.mempool
       ? {
           count: node.mempool.count,
-          shown: node.mempool.txs.length,
+          all: Array.isArray(node.mempool.all),
           following: node.mempool.following,
           lastFeedAt: node.mempool.lastFeedAt,
+          feedFileAt: node.mempool.feedFileAt ?? null,
           stats: node.mempool.stats,
         }
       : null,
-    sources: {
-      snapshot: SRC.use.snapshot === SO.DEFAULT_SNAP ? 'default' : 'custom',
-      blocks: SRC.use.blocks === SO.DEFAULT_BLOCKS ? 'default' : 'custom',
-    },
+    template: state.template ? NT.templateWords(state.template, node.height, node.hash) : null,
+    sources: Object.fromEntries(['snapshot', 'blocks'].map((k) => [k, SO.nonDefault(SRC.use).includes(k) ? 'custom' : 'default'])),
+    consent: !!(LS.get('reef:started') || LS.get('bight:started')),
     storage: est ? { usage: est.usage, quota: est.quota } : null,
+    persisted,
     running: state.running,
     idle: state.idle,
+    log: state.log,
   };
   const text = JSON.stringify(d, null, 1);
   try {
@@ -651,20 +893,12 @@ $('o-diag').onclick = async () => {
 };
 
 // ---- a newer Bight: checked a little after start and then hourly, offered, never forced
-const versionKey = (v) => (/^(\d{4})-(\d{2})-(\d{2})\.(\d+)$/.exec(String(v ?? '')) ?? []).slice(1).map(Number);
-const newer = (a, b) => {
-  const x = versionKey(a),
-    y = versionKey(b);
-  if (x.length !== 4 || y.length !== 4) return false;
-  const i = x.findIndex((v, j) => v !== y[j]);
-  return i >= 0 && x[i] > y[i];
-};
 async function checkVersion() {
   try {
     const v = await (await fetch('version.json', { cache: 'no-cache' })).json();
-    if (newer(v.version, VERSION))
+    if (VS.newer(v.version, VERSION))
       banner('update', 'info', `A newer Bight is available (${v.version}). Reload to use it.`, [
-        ['Reload', () => location.replace(location.pathname + '?v=' + encodeURIComponent(v.version))],
+        ['Reload', () => reloadWith({ v: v.version })],
       ]);
   } catch {}
 }
@@ -688,6 +922,7 @@ function goIdle() {
     'idle',
     'info',
     'Another tab of this browser runs the node (Reef, Bight, Winch or Hitch). Bight shows the mempool only where the node runs; this tab starts it as soon as that tab closes.',
+    [['Check again', () => location.reload()]],
   );
   pill();
   // the lock is held by the other tab: when it is granted here, the other tab has closed, so this one takes over
@@ -697,6 +932,7 @@ function goIdle() {
     .catch(() => {});
 }
 function lockFailed(err) {
+  pill();
   banner(
     'lockfail',
     'bad',
@@ -714,11 +950,16 @@ function lockFailed(err) {
 }
 async function startNode(force = false) {
   unbanner('welcome');
+  // asked first, always: no node starts (and nothing is downloaded) without the person's go
+  if (!(LS.get('reef:started') || LS.get('bight:started'))) return welcome(force);
+  if (!navigator.locks && !force) {
+    node.lockError = 'this browser has no Web Locks';
+    return lockFailed(node.lockError);
+  }
   try {
     const started = await tn.start({ force });
     if (started === false) return node.lockError ? lockFailed(node.lockError) : goIdle();
     state.running = true;
-    LS.set('reef:started', String(Date.now()));
     navigator.storage?.persist?.().catch(() => {}); // asked on every start: a site not asked is the first evicted
     // a node whose code hangs while loading never says a word: after a minute of silence, that is said
     setTimeout(() => {
@@ -734,33 +975,21 @@ async function startNode(force = false) {
     fatal(ST.plainError(e.message));
   }
 }
-tn.on('message', () => unbanner('slowstart'));
-async function begin() {
-  const miss = missingFeatures();
-  if (miss.length)
-    return fatal(
-      `This browser cannot run the node: it lacks ${miss.join(', ')}. Use a recent Chrome, Edge, Brave or Firefox, outside a private window.`,
-    );
-  try {
-    await navigator.storage.getDirectory();
-  } catch (e) {
-    return fatal(
-      `This window cannot keep the node's files (${e?.name || e}): a private window cannot run the node. Open Bight in an ordinary window.`,
-    );
-  }
-  if (!navigator.locks) return lockFailed('this browser has no Web Locks');
-  if (LS.get('reef:started') || LS.get('bight:started')) return startNode();
+async function welcome(force = false) {
   const est = await navigator.storage?.estimate?.().catch(() => null);
   const free = est ? est.quota - est.usage : null;
+  const short = free != null && free < 1.2e9;
   $('wl-space').textContent =
     free == null
       ? 'The browser does not say how much space it allows.'
-      : free < 1.2e9
-        ? `The browser allows ${mib(free)} more for this site, less than the 1.1 GB needed: free disk space first.`
+      : short
+        ? `The browser allows ${mib(free)} more for this site, less than the 1.1 GB needed. Free disk space first; in a private window, open Bight in an ordinary one instead.`
         : `The browser allows ${mib(free)} for this site; 1.1 GB is needed.`;
+  $('wl-start').disabled = short;
   $('wl-start').onclick = () => {
     $('welcome').close();
-    startNode();
+    LS.set('reef:started', String(Date.now()));
+    startNode(force);
   };
   $('wl-later').onclick = () => {
     $('welcome').close();
@@ -774,5 +1003,22 @@ async function begin() {
     $('wl-later').onclick();
   };
   $('welcome').showModal();
+}
+async function begin() {
+  const miss = missingFeatures();
+  if (miss.length)
+    return fatal(
+      `This browser cannot run the node: it lacks ${miss.join(', ')}. Use a recent Chrome, Edge, Brave or Firefox, outside a private window.`,
+    );
+  try {
+    await navigator.storage.getDirectory();
+  } catch (e) {
+    return fatal(
+      top !== self
+        ? `This frame cannot keep the node's files (${e?.name || e}): the page around it blocks storage. Open Bight in its own tab.`
+        : `This window cannot keep the node's files (${e?.name || e}): a private window cannot run the node. Open Bight in an ordinary window.`,
+    );
+  }
+  return startNode();
 }
 begin().catch((e) => fatal('Bight could not start: ' + (e?.message || e)));
