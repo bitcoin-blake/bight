@@ -181,8 +181,11 @@ jobs:
           RESULT: ${{ needs.pins.outputs.result }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          set -o pipefail
           title='The four apps pin different node versions (hourly check)'
-          n=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search "in:title \"$title\"" --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -1)
+          # the open issues listed and matched on the exact title (not the search index, which lags and could open a second
+          # issue); a listing that fails stops the step (pipefail) instead of reading as "no issue"
+          n=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --limit 200 --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -1)
           body="The comparison of the published apps' node pins failed. Release the apps that are behind (README, Releasing)."
           if [ "$RESULT" = same ]; then
             [ -z "$n" ] || gh issue close "$n" -R "$GITHUB_REPOSITORY" --comment "The apps pin the same node again: $RUN"

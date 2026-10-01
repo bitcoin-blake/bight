@@ -21,16 +21,52 @@ t('index.html loads bight.js?v= the same version', html.includes(`bight.js?v=${v
 t('index.html loads theme.js?v= the same version', html.includes(`theme.js?v=${v}"`));
 const node = src.match(/blaketestnode@([0-9a-f]{40})/)?.[1];
 const csp = html.match(/Content-Security-Policy" content="([^"]+)"/)?.[1] ?? '';
-// the policy, directive by directive, read exactly: a name that merely contains another is not that name
-const directives = new Map(
-  csp
+// the policy as the browser reads it: { directive: Set(tokens) }, names in lower case; a directive written twice is listed in
+// `repeated` (the browser enforces the first copy and ignores the second, so a checker must never read the last). As Reef's
+// release test (reef/test/release-test.mjs), so the two pages are held to the same reading
+const parseCsp = (text) => {
+  const out = {},
+    repeated = [];
+  for (const [k0, ...v] of text
     .split(';')
     .map((d) => d.trim().split(/\s+/))
-    .filter((d) => d[0])
-    .map(([k, ...v]) => [k, v]),
-);
-const scriptSrc = directives.get('script-src') ?? [],
-  workerSrc = directives.get('worker-src') ?? [];
+    .filter((d) => d[0])) {
+    const k = k0.toLowerCase();
+    if (out[k]) repeated.push(k);
+    else out[k] = new Set(v);
+  }
+  return Object.defineProperty(out, 'repeated', { value: repeated, enumerable: false });
+};
+// what differs from the expected policy, directive by directive ('' when exactly it)
+const cspDiff = (text, want) => {
+  const got = parseCsp(text),
+    out = got.repeated.map((k) => `${k} repeated`);
+  for (const k of new Set([...Object.keys(got), ...Object.keys(want)])) {
+    const g = got[k] ?? new Set(),
+      w = new Set(want[k] ?? []);
+    const extra = [...g].filter((x) => !w.has(x)),
+      lack = [...w].filter((x) => !g.has(x));
+    if (!got[k]) out.push(`${k} missing`);
+    else if (!want[k]) out.push(`${k} not expected`);
+    if (extra.length) out.push(`${k} +${extra.join(' +')}`);
+    if (lack.length) out.push(`${k} -${lack.join(' -')}`);
+  }
+  return out.join('; ');
+};
+const cspMatches = (text, want) => cspDiff(text, want) === '';
+// the policy meta sits in <head>, before the first <script (a meta policy governs only what is parsed after it)
+const cspPlaced = (page) => {
+  const head = page.search(/<head[\s>]/i),
+    endHead = page.search(/<\/head>/i),
+    meta = page.search(/<meta[^>]+http-equiv="Content-Security-Policy"/i),
+    script = page.search(/<script[\s>]/i);
+  return head >= 0 && meta > head && (endHead < 0 || meta < endHead) && (script < 0 || meta < script);
+};
+const cspOf = (page) => page.match(/Content-Security-Policy" content="([^"]+)"/)?.[1] ?? '';
+const policy = parseCsp(csp);
+const scriptSrc = [...(policy['script-src'] ?? [])],
+  workerSrc = [...(policy['worker-src'] ?? [])];
+t('the security policy is in <head> before any script (a policy only covers what is parsed after it)', cspPlaced(html));
 t(
   'there is a security policy, and its script-src allows no inline code and no eval',
   !!csp && scriptSrc.length > 0 && !scriptSrc.some((x) => /unsafe-|^data:|^\*$|^https:$/.test(x)),
@@ -61,20 +97,49 @@ const expected = [
   `https://cdn.jsdelivr.net/gh/bitcoin-blake/blaketestnode@${node}/`,
   ...workerPins.map((p) => `https://cdn.jsdelivr.net/gh/${p}/`),
 ];
-const pinsIn = (list) => list.filter((x) => /^https:\/\/cdn\.jsdelivr\.net\/gh\//.test(x)).sort();
+const webtorrent = tabnode.match(/https:\/\/cdn\.jsdelivr\.net\/npm\/webtorrent@[^'"]+/)?.[0] ?? '';
+const pinned = [...new Set(expected)];
+// the whole policy, exactly: every directive and every token, nothing missing, nothing extra, nothing written twice
+const WANT = {
+  'default-src': ["'self'"],
+  'script-src': ["'self'", 'blob:', ...pinned, webtorrent],
+  'worker-src': ["'self'", 'blob:', ...pinned],
+  'connect-src': ["'self'", 'https:', 'wss:'], // the block source and relays a person chooses (README: connect-src)
+  'img-src': ["'self'", 'data:', 'blob:'],
+  'style-src': ["'self'", "'unsafe-inline'"],
+  'object-src': ["'none'"],
+  'base-uri': ["'none'"],
+  'form-action': ["'none'"],
+};
 t(
-  'script-src and worker-src name exactly the node pin and the libraries its worker imports, nothing older or extra',
-  !!node &&
-    JSON.stringify(pinsIn(scriptSrc)) === JSON.stringify([...new Set(expected)].sort()) &&
-    JSON.stringify(pinsIn(workerSrc)) === JSON.stringify([...new Set(expected)].sort()),
-  `expected ${expected.join(' ')}; script-src ${pinsIn(scriptSrc).join(' ')}`,
+  'the policy is exactly the expected one: script-src and worker-src name the node pin and the libraries its worker imports (and the WebTorrent build), nothing older or extra, no directive twice',
+  !!node && !!webtorrent && cspMatches(csp, WANT),
+  cspDiff(csp, WANT),
 );
+// the checks above refuse a policy that drifts: each of these, made from the real page, must fail them
+{
+  const realScript = `script-src ${[...WANT['script-src']].join(' ')}`;
+  const drift = {
+    'a looser script-src written before the real one': html.replace(
+      realScript,
+      "script-src 'unsafe-inline' 'unsafe-eval' *; " + realScript,
+    ),
+    'the policy moved into <body>, after a script': html
+      .replace(/<meta[^>]+http-equiv="Content-Security-Policy"[^>]*>/i, '')
+      .replace(/<\/body>/i, `<meta http-equiv="Content-Security-Policy" content="${csp}"></body>`),
+    'a duplicate script-src with an extra host first': html.replace(realScript, `${realScript} https://evil.example/; ${realScript}`),
+    'extra hosts in the one script-src': html.replace(
+      realScript,
+      `${realScript} https://evil.example/ https://cdn.jsdelivr.net/npm/ https://*.jsdelivr.net`,
+    ),
+    'default-src and object-src deleted': html.replace("default-src 'self'; ", '').replace("object-src 'none'; ", ''),
+  };
+  const passes = (page) => cspPlaced(page) && cspMatches(cspOf(page), WANT);
+  t('the real page passes the policy checks', passes(html));
+  for (const [name, page] of Object.entries(drift))
+    t(`the policy checks refuse a drifted page: ${name}`, page !== html && !passes(page), page === html ? 'the drift did not apply' : '');
+}
 t('the worker loads as blob modules, which worker-src allows', workerSrc.includes('blob:'));
-t(
-  'the policy names the WebTorrent build the loader imports',
-  (tabnode.match(/https:\/\/cdn\.jsdelivr\.net\/npm\/webtorrent@[^'"]+/) ?? [''])[0] !== '' &&
-    csp.includes(tabnode.match(/https:\/\/cdn\.jsdelivr\.net\/npm\/webtorrent@[^'"]+/)?.[0]),
-);
 // ---- the engine at the pin the policy names (bitcoin-desktop/schema): the header's time, and the subsidy the page's
 // fees are computed with (chain.mjs: 50 BTC halving every 210,000 blocks, as testnet4's params)
 const schemaPin = csp.match(/bitcoin-desktop\/schema@([0-9a-f]{40})/)?.[1];
@@ -199,13 +264,26 @@ t(
 // answer out of node.error (unless it is a fault in the node's files, which is the node's state): the page matches it to its own search by req
 t(
   'a request the node cannot answer is an error that echoes the request’s req; the loader does not take it as the node’s state',
-  /post\(\{ type: 'error', (?:name: err\?\.name \?\? null, )?text: err\.message[^\n]*\.\.\.\(m\.req != null \? \{ req: m\.req \} : \{\}\)/.test(
+  /post\(\{ type: 'error', name: err\?\.name \?\? null, text: err\.message[^\n]*\.\.\.\(m\.req != null \? \{ req: m\.req \} : \{\}\)/.test(
     worker,
   ) &&
     /throw new Error\('Block not found'\)/.test(worker) &&
-    /m\.type === 'error'\) \{ const lookup = node\.synced && (?:!storageFault\(m\) && )?\(m\.req != null/.test(tabnode) &&
+    /m\.type === 'error'\) \{ const lookup = node\.synced && !storageFault\(m\) && \(m\.req != null/.test(tabnode) &&
     /if \(!lookup\) \{ node\.error = m\.text;/.test(tabnode),
 );
+// the faults in the node's files, by name: the pinned loader's storageFault list is the page's (STORAGE_FAULTS, which says
+// "the node's files failed" instead of a request's own answer) and the fake loader's (which the smoke test drives)
+{
+  const names = (src) =>
+    (/storageFault = \(m\) =>\s*\/\^\(([A-Za-z|]+)\)\$\//.exec(src)?.[1] ?? '').split('|').filter(Boolean).sort().join(',');
+  const pinned = names(tabnode);
+  const fakeSrc = readFileSync(new URL('./fake/tabnode.js', import.meta.url), 'utf8');
+  t(
+    'the faults in the node’s files are the same list in the pinned loader, the page (STORAGE_FAULTS) and the fake loader',
+    pinned.split(',').length === 5 && pinned === [...ST.STORAGE_FAULTS].sort().join(',') && pinned === names(fakeSrc),
+    `pinned ${pinned}; page ${[...ST.STORAGE_FAULTS].sort()}; fake ${names(fakeSrc)}`,
+  );
+}
 // a wipe that leaves no node running: the loader says so the way the page reads it (phase 'error', a fatal error message,
 // on 'error' and on 'message')
 t(
@@ -316,7 +394,7 @@ t(
 // tools/version-bump.mjs, run in a copy: every place the version lives moves together and upwards; a lower or malformed
 // version is refused, and nothing is written then
 {
-  const { mkdtempSync, mkdirSync, copyFileSync, rmSync } = await import('node:fs');
+  const { mkdtempSync, mkdirSync, copyFileSync, rmSync, writeFileSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const dir = mkdtempSync(tmpdir() + '/bight-bump-');
   mkdirSync(dir + '/tools');
@@ -338,19 +416,43 @@ t(
     read('index.html').match(/bight\.js\?v=([^"]+)"/)?.[1],
     read('index.html').match(/theme\.js\?v=([^"]+)"/)?.[1],
   ];
-  const ok = bump();
+  const setWas = (ver) => {
+    // the current version in all four places, as a release leaves it
+    writeFileSync(`${dir}/version.json`, read('version.json').replace(/"version": "[^"]+"/, `"version": "${ver}"`));
+    writeFileSync(`${dir}/bight.js`, read('bight.js').replace(/export const VERSION = '[^']+';/, `export const VERSION = '${ver}';`));
+    writeFileSync(`${dir}/index.html`, read('index.html').replace(/(bight|theme)\.js\?v=[^"]+"/g, `$1.js?v=${ver}"`));
+  };
+  // an explicit version: written in all four places (independent of the clock)
+  const ok = bump('2099-01-01.1');
   const after = places();
   t(
-    'version-bump writes the next version in all four places, above the current one',
-    ok && new Set(after).size === 1 && after[0] !== v && after[0] > v.slice(0, 10),
+    'version-bump writes a given version in all four places',
+    ok && new Set(after).size === 1 && after[0] === '2099-01-01.1',
     JSON.stringify(after),
   );
-  const lower = bump(v);
+  const lower = bump('2026-10-01.1');
   const malformed = bump('2026-10-01');
   t(
     'version-bump refuses a version not above the current one, or malformed, and writes nothing',
     !lower && !malformed && JSON.stringify(places()) === JSON.stringify(after),
     JSON.stringify(places()),
+  );
+  // no argument, the current version dated ahead of today (made by hand on a local date ahead of UTC): the next number on
+  // that day, never a refusal; and from a past day, .1 on a later day
+  setWas('2099-12-31.4');
+  const ahead = bump() && places();
+  setWas('2000-01-01.3');
+  const behind = bump() && places();
+  t(
+    'version-bump with no argument goes up from a version dated ahead of today (2099-12-31.4 → .5) and from a past day (→ a later day, .1)',
+    !!ahead &&
+      new Set(ahead).size === 1 &&
+      ahead[0] === '2099-12-31.5' &&
+      !!behind &&
+      new Set(behind).size === 1 &&
+      behind[0].endsWith('.1') &&
+      behind[0] > '2000-01-01',
+    `${JSON.stringify(ahead)} ${JSON.stringify(behind)}`,
   );
   rmSync(dir, { recursive: true, force: true });
 }

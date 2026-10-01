@@ -1,5 +1,5 @@
 // A stand-in for blaketestnode's browser/tabnode.js, the page's only seam to the node: the smoke test serves it in place of
-// the pinned file and drives the page with window.__fake.emit(type, message). Like the real loader (at b54e498), it keeps
+// the pinned file and drives the page with window.__fake.emit(type, message). Like the real loader (at bff010d), it keeps
 // node.* from the messages before the page sees them, emits every message on 'message' too, holds the shared node lock in
 // start() (or reports node.lockError when the browser refuses it), answers mempool-get with mempool-tx from what it was
 // last sent, and clears node.unresponsive on 'responsive'. window.__fake records the options the page created it with,
@@ -7,6 +7,8 @@
 // window.__fakeConfig (set before the page loads): { lockError } makes the lock refused; { wipeFail } makes a wipe fail as
 // the loader's does when no node answers it (phase 'error', a fatal error message, a rejection); { wipeLeaves: [names] }
 // makes a wipe leave those files; { wipeFailQuiet } makes it fail with the node stopped (phase 'error') but no message.
+export const storageFault = (m) =>
+  /^(NotFoundError|NoModificationAllowedError|InvalidStateError|NotReadableError|QuotaExceededError)$/.test(m?.name ?? '');
 export const mib = (b) => `${(b / 1048576).toFixed(1)} MiB`;
 export const n = (x) => Number(x).toLocaleString('en-US');
 export function createTabNode(opts = {}) {
@@ -45,8 +47,12 @@ export function createTabNode(opts = {}) {
     if (t === 'nostr') node.nostr = m;
     if (t === 'unresponsive') Object.assign(node, { unresponsive: true, error: 'the node has not answered for two minutes' });
     if (t === 'responsive') Object.assign(node, { unresponsive: false, error: null });
-    // as the loader at b54e498: an error answering a request (it echoes req, or names a lookup) is not the node's state
-    if (t === 'error' && !(node.synced && (m.req != null || /Block not found|sync first|not in the set|not in mempool/.test(m.text))))
+    // as the loader at bff010d: an error answering a request (it echoes req, or names a lookup) is not the node's state,
+    // unless it is a fault in the node's files (storageFault, by the error's name): that is the node's, whoever asked
+    if (
+      t === 'error' &&
+      !(node.synced && !storageFault(m) && (m.req != null || /Block not found|sync first|not in the set|not in mempool/.test(m.text)))
+    )
       node.error = m.text;
     fire(t, m);
     fire('message', { type: t, ...m });

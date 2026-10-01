@@ -8,7 +8,7 @@
 <meta name="description" content="A mempool monitor in a browser tab for txbt4, the BLAKE2b testnet4: every transaction shown was validated by the tab's own node, and the next block is the one this tab would build.">
 <meta property="og:site_name" content="Bight"><meta property="og:title" content="Bight · a mempool in a tab"><meta property="og:description" content="A mempool monitor that validates every transaction itself, in the browser. The next block on the page is the one this tab would build. BLAKE2b testnet4."><meta property="og:type" content="website"><meta property="og:url" content="https://bitcoin-blake.github.io/bight/"><meta property="og:image" content="https://bitcoin-blake.github.io/bight/og.png"><meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23171a2b'/%3E%3Cpath d='M6 22c4-10 8-10 10 0s6 10 10 0' fill='none' stroke='%23f0a04b' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
-<script src="theme.js?v=2026-10-01.11"></script>
+<script src="theme.js?v=2026-10-01.12"></script>
 <style>
 :root {
   color-scheme: dark;
@@ -73,6 +73,8 @@ h2 { font-size:11.5px; text-transform:uppercase; letter-spacing:1px; color:var(-
 
 .blocksrow { display:flex; align-items:stretch; gap:14px; overflow-x:auto; padding:6px 2px 16px; position:relative }
 .skip { position:absolute; left:-9999px } .skip:focus { left:auto; right:18px; z-index:6; display:inline-block; padding:4px 10px; border:1px solid var(--fieldline); border-radius:8px; background:var(--panel2); box-shadow:var(--shadow) }
+/* on a phone the heading wraps under the focused link: it keeps clear of it (padding as wide as the link) instead */
+@media (max-width:760px) { .skip:focus { right:12px } .skip:focus + #blocks-h { padding-right:9.5rem } }
 .blocks { display:flex; gap:10px }
 .divider { width:0; border-left:2px dashed var(--line); position:relative; margin:18px 16px 0 }
 .divider::after { content:"chain tip"; position:absolute; top:-18px; left:-24px; font-size:10.5px; letter-spacing:.4px; color:var(--mut); white-space:nowrap }
@@ -111,7 +113,7 @@ th { text-align:left; color:var(--mut); font-weight:600; font-size:11.5px; lette
 html { scroll-padding-bottom:48px }
 @media (min-width:761px) { html { scroll-padding-top:64px } }
 /* a stopped node: what is on screen stays, greyed, under a note with the time it stopped */
-main.stopped .blocksrow, main.stopped section.panel { filter:grayscale(1) }
+main.stopped .blocksrow, main.stopped section.panel, main.stopped .detail { filter:grayscale(1) }
 td { padding:6px 8px; border-bottom:1px solid var(--rowline); white-space:nowrap }
 td.amt, th.amt { text-align:right; font-family:var(--mono) }
 tr:hover td { background:var(--panel2) }
@@ -153,6 +155,12 @@ dialog .f { padding:12px 18px; border-top:1px solid var(--line); display:flex; j
   td.mono .txbtn { max-width:12ch; overflow:hidden; text-overflow:ellipsis; display:inline-block; vertical-align:bottom }
 }
 @media (min-width:761px) and (max-width:1100px) { .grid > .panel:nth-child(3) { grid-column:1 / -1 } }
+/* between a phone and a wide screen (a laptop at 125-150% zoom): the header wraps instead of pushing the page sideways, the
+   search on its own row and the subtitle left out; it stays sticky, and bight.js keeps the top scroll padding at its height */
+@media (min-width:761px) and (max-width:1100px) {
+  .top { flex-wrap:wrap; row-gap:8px } .top .brand span { display:none } .top .brand { white-space:nowrap }
+  .search { order:2; flex-basis:100% } .search input { max-width:none; flex:1 }
+}
 .sr { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap }
 #banners { display:flex; flex-direction:column; gap:0 }
 .banner { display:flex; flex-wrap:wrap; gap:8px 12px; align-items:center; padding:8px 18px; border-bottom:1px solid var(--line); font-size:12.5px; background:var(--panel2) }
@@ -198,6 +206,6 @@ body.embedded .top .brand span { display:none }
   <div class="note">Bight, Reef, Winch and Hitch share this site's storage, so one copy of the node's files serves all four, and one tab runs the node. Source: <a href="https://github.com/bitcoin-blake/bight" target="_blank" rel="noopener">github.com/bitcoin-blake/bight</a>.</div>
 </div><div class="f"><button class="btn" id="o-reset" type="button" style="margin-right:auto">Reset to defaults</button><button class="btn" id="o-cancel" type="button">Cancel</button><button class="btn" id="o-ok" type="button">OK</button></div></dialog>
 <dialog id="welcome" aria-labelledby="wl-t" aria-describedby="wl-d"><div class="t" id="wl-t">Welcome to Bight</div><div class="b"><p id="wl-d" style="margin:0">To show the mempool, this tab runs a node: it downloads the chain's state at block <span id="wl-base">150,307</span> (<b id="wl-size">870 MB</b>), checks it, and validates every block since. That takes a few minutes on a fast connection and longer on a slow one; it is kept for next time (and shared with Reef, Winch and Hitch), and resumes if interrupted. Avoid starting on a metered connection.</p><p id="wl-space" class="note" style="margin:0"></p></div><div class="f"><button class="btn" id="wl-later" type="button">Not now</button><button class="btn" id="wl-start" type="button">Start</button></div></dialog>
-<script type="module" src="bight.js?v=2026-10-01.11"></script>
+<script type="module" src="bight.js?v=2026-10-01.12"></script>
 </body>
 </html>

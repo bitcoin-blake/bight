@@ -5,7 +5,7 @@
 // The decisions (packing, bands, what was seen first, the chain cache, search, the status words, the sources, the
 // settings, the markup of tiles and details) are lib/*.mjs, tested; this file wires them to the document, patching in
 // place so a focused or selected element survives the next update.
-export const VERSION = '2026-10-01.11';
+export const VERSION = '2026-10-01.12';
 const $ = (id) => document.getElementById(id);
 const NODE = 'https://cdn.jsdelivr.net/gh/bitcoin-blake/blaketestnode@bff010d02077f62f91ce7e812837cd920f514041';
 const RELAYS = [
@@ -147,6 +147,8 @@ function markStopped() {
   if (!main || main.classList.contains('stopped')) return;
   const at = new Date().toLocaleTimeString();
   main.classList.add('stopped');
+  state.stoppedAt = at;
+  asOfDetail();
   const note = document.createElement('p');
   note.id = 'stopnote';
   note.className = 'note';
@@ -161,6 +163,24 @@ function markStopped() {
     h.append(s);
   }
 }
+// the open detail, once stopped, says when its figures are from (a detail opened after the stop too)
+function asOfDetail() {
+  const h = $('detail').querySelector('#dtitle');
+  // (a projected block's title says "as of" already: the time it was packed, the stop time once stopped)
+  if (!state.stoppedAt || !h || h.querySelector('.asof') || / as of /.test(h.textContent)) return;
+  const s = document.createElement('span');
+  s.className = 'mut asof';
+  s.textContent = ` · as of ${state.stoppedAt}`;
+  h.append(s);
+}
+const topBar = document.querySelector('.top');
+function padTop() {
+  const sticky = getComputedStyle(topBar).position === 'sticky';
+  document.documentElement.style.scrollPaddingTop = sticky ? `${topBar.offsetHeight + 8}px` : '';
+}
+if ('ResizeObserver' in window) new ResizeObserver(padTop).observe(topBar);
+addEventListener('resize', padTop);
+padTop();
 const fatalShown = () => !!document.querySelector('#banners [data-b="fatal"]');
 // in a frame whose page is on another site, nothing that downloads, trusts a source or overrides the lock is done on a click
 // (the page around it could have placed that click); it says to open Bight in its own tab instead
@@ -385,7 +405,8 @@ tn.on('message', (m) => {
   if (m.type === 'responsive' || m.type === 'unresponsive' || m.type === 'error') pill();
   if (m.type === 'mempool-tx') onMempoolTx(m);
   if (m.type === 'error' && m.req === TEMPLATE_REQ) {
-    const why = ST.plainError(m.text).slice(0, 120);
+    // a fault in the node's files is said once, in the notice; the tile only points at it. Else the whole plain sentence
+    const why = ST.isStorageFault(m) ? ST.FILES_FAILED : ST.plainError(m.text);
     state.template = { height: (node.height ?? 0) + 1, txs: 0, fees: 0, weight: 0, checks: { ok: false, failed: [why] }, buildError: why };
     scheduleRender();
   }
@@ -396,11 +417,11 @@ tn.on('message', (m) => {
     dropPending();
     // nothing is open for that height any more: a later reorganisation does not bring the abandoned search back
     if (state.openFound === h) state.openFound = null;
-    openDetail(
-      `<h2 id="dtitle">Block ${esc(n(h))}</h2><p class="mut">the node has no block ${esc(n(h))} on its chain now (a reorganisation or a rollback may have just changed it); search again</p>`,
-      { kind: 'q' },
-      { focus: false },
-    );
+    // a fault in the node's files is not "no such block": it says so and points at the notice the loader's error raised
+    const words = ST.isStorageFault(m)
+      ? `block ${esc(n(h))} could not be read: ${esc(ST.FILES_FAILED)}`
+      : `the node has no block ${esc(n(h))} on its chain now (a reorganisation or a rollback may have just changed it); search again`;
+    openDetail(`<h2 id="dtitle">Block ${esc(n(h))}</h2><p class="mut">${words}</p>`, { kind: 'q' }, { focus: false });
   }
 });
 
@@ -636,10 +657,14 @@ function renderProjected(blocks) {
       html: e.html,
       label: e.label,
       expanded: sel(0),
-      onActivate: () => showProjected(EMPTY_BLOCK, 0),
+      onActivate: () =>
+        node.mempool
+          ? showProjected(EMPTY_BLOCK, 0)
+          : ((state.selectedProj = 0),
+            openDetail(`<h2 id="dtitle">The next block</h2><p class="mut">${esc(e.label)}</p>`, { kind: 'p', i: 0 })),
     });
   } else {
-    const cov = P.coverage(node.mempool);
+    const cov = P.coverage(node.mempool, list());
     if (cov.truncated)
       items.push({
         key: 'more',
@@ -745,7 +770,17 @@ function openDetail(html, opener, { focus = true, keepPending = false } = {}) {
     if (h && d.dataset.said !== h.textContent) say(h.textContent);
   }
   d.dataset.said = d.querySelector('#dtitle')?.textContent ?? '';
+  asOfDetail();
+  // a table in the detail is a tab stop (to scroll it by keyboard) only while it is wider than its box
+  scrollStops();
 }
+function scrollStops() {
+  for (const box of $('detail').querySelectorAll('.dtbl')) {
+    if (box.scrollWidth > box.clientWidth) box.setAttribute('tabindex', '0');
+    else box.removeAttribute('tabindex');
+  }
+}
+addEventListener('resize', () => !$('detail').hidden && scrollStops());
 // Escape closes the detail from anywhere on the page (a tile, a row, the detail itself), unless a dialog is open: the
 // dialog's own Escape is meant then
 // The focus goes back to what opened it only when it was in the detail, on that opener, or nowhere; from anywhere else
@@ -821,7 +856,7 @@ function showProjected(b, i) {
   renderMined();
   renderProjected(state.lastBlocks ?? []);
   const tw = templateNow();
-  openDetail(V.projDetail(b, i, { tw: i === 0 && state.template ? tw : null, asOf: new Date().toLocaleTimeString() }), {
+  openDetail(V.projDetail(b, i, { tw: i === 0 && state.template ? tw : null, asOf: state.stoppedAt ?? new Date().toLocaleTimeString() }), {
     kind: 'p',
     key: i,
   });
@@ -830,9 +865,15 @@ function showProjected(b, i) {
 // ---- the mempool panel, the histogram, the table
 function renderMempool(blocks) {
   const m = node.mempool;
-  if (!m) return;
+  if (!m) {
+    // no mempool yet: the table says why, and the figures are "—" when nothing is coming (not started), "…" while it is
+    const words = ST.emptyWords(null, { following: state.following, notStarted: state.notStarted });
+    for (const id of ['m-count', 'm-size', 'm-fees', 'm-med', 'm-next']) $(id).textContent = state.notStarted ? '—' : '…';
+    $('rows').innerHTML = `<tr><td colspan="6" class="mut">${esc(words)}</td></tr>`;
+    return;
+  }
   const all = list();
-  const cov = P.coverage(m);
+  const cov = P.coverage(m, all);
   const wmed = P.weightedMedian(all);
   const tw = templateNow(blocks);
   $('m-count').textContent = n(m.count);
@@ -1390,6 +1431,7 @@ function goIdle() {
     .catch(() => {});
 }
 function lockFailed(err) {
+  $('syncmsg').textContent = 'not started: the browser refused the lock';
   pill();
   banner(
     'lockfail',

@@ -1547,6 +1547,235 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
     await p.ctx.close();
   }
 }
+// 20: round 7. A fault in the node's files met by a search or the template build (said as that, not "no block"); an abandoned
+// search not brought back by a reorganisation (not found, timed out); a stop that greys the open detail and the page, once
+// whatever the stops; the not-started mempool panel and table; the empty next tile's own words; a refused lock in the status
+// bar; the graph's label with its units; the header between a phone and a wide screen; the policy in force
+{
+  const hx = (h, c = '0') => c + h.toString(16).padStart(63, '0');
+  const blk = (h, c = '0') => ({
+    height: h,
+    hash: hx(h, c),
+    previousblockhash: hx(h - 1, c),
+    size: 400,
+    nTx: 1,
+    header: { time: Math.floor(Date.now() / 1000) - 60 },
+    txids: ['00'.repeat(32)],
+  });
+  const searchReq = (page, h) =>
+    page.evaluate(
+      (h) => window.__fake.posts.filter((m) => m.type === 'block' && m.height === h && /^bight:s/.test(m.req)).at(-1)?.req ?? null,
+      h,
+    );
+  const search = async (page, h) => {
+    await page.fill('#q', String(h));
+    await page.press('#q', 'Enter');
+    await until(page, (h) => window.__fake.posts.some((m) => m.type === 'block' && m.height === h && /^bight:s/.test(m.req)), h);
+    return searchReq(page, h);
+  };
+  {
+    const p = await profile({ 'reef:started': '1' });
+    const a = await p.open();
+    await until(a, () => window.__fake.starts === 1);
+    const H = 152800;
+    await emit(a, 'mempool', mp([mtx('5', 1, 3)]));
+    await emit(a, 'synced', { height: H, hash: hx(H), applied: 1 });
+    // B1: a search met by a fault in the node's files (OPFS: the site's data cleared): said as that, with the node's notice
+    const r1 = await search(a, H - 30);
+    await emit(a, 'error', {
+      text: 'A requested file or directory could not be found at the time an operation was processed.',
+      name: 'NotFoundError',
+      req: r1,
+    });
+    t(
+      'a search met by a fault in the node’s files says the files failed, not that the chain has no such block',
+      (await until(a, () => /could not be read: the node’s files failed/.test(document.getElementById('detail').textContent))) &&
+        !/has no block/.test(await text(a, '#detail')),
+      await text(a, '#detail'),
+    );
+    t(
+      '…and the node’s notice says it in words a person can act on (files gone or unreadable, reload)',
+      await until(a, () => /files are gone or unreadable/.test(document.getElementById('banners').textContent)),
+      await text(a, '#banners'),
+    );
+    // B2: the template build met by a storage refusal: the tile says the build fails, its words point at the notice
+    await emit(a, 'error', { text: 'The browser refused more storage', name: 'QuotaExceededError', req: 'bight:t' });
+    t(
+      'a template build met by a fault in the files: the tile says the build fails, and the words point at the notice once',
+      (await until(a, () => /build fails/.test(document.getElementById('proj').textContent))) &&
+        (await until(a, () =>
+          /build fails: the node’s files failed \(see the notice above\)/.test(document.getElementById('m-next').textContent),
+        )),
+      await text(a, '#m-next'),
+    );
+    // an abandoned search, not found: a reorganisation over that height does not bring it back
+    await a.click('#dclose').catch(() => {});
+    const r2 = await search(a, H - 40);
+    await emit(a, 'error', { text: 'Block not found', req: r2 });
+    await until(a, () => /has no block/.test(document.getElementById('detail').textContent));
+    await emit(a, 'synced', { height: H, hash: hx(H, 'c'), applied: 50 });
+    await a.waitForTimeout(400);
+    t(
+      'a search answered "not found", then a reorganisation over its height: the not-found words stay, nothing is asked again',
+      !/replaced by a reorganisation/.test(await text(a, '#detail')) && (await searchReq(a, H - 40)) === r2,
+      await text(a, '#detail'),
+    );
+    // an abandoned search, timed out (15 s): the same
+    const r3 = await search(a, H - 45);
+    t(
+      'a search the node does not answer gives up after 15 s',
+      await until(a, () => /did not answer/.test(document.getElementById('detail').textContent), null, 17000),
+    );
+    await emit(a, 'synced', { height: H, hash: hx(H, 'd'), applied: 60 });
+    await a.waitForTimeout(400);
+    t(
+      'a search that timed out, then a reorganisation over its height: not brought back, not asked again',
+      !/replaced by a reorganisation/.test(await text(a, '#detail')) && (await searchReq(a, H - 45)) === r3,
+      await text(a, '#detail'),
+    );
+    // the graph's label, once it has two points: transactions and vB named
+    t(
+      'the graph’s label names its units (transactions, vB)',
+      await until(
+        a,
+        () =>
+          / transactions? and [\d,]+ vB; at most [\d,]+ transactions? and [\d,]+ vB/.test(
+            document.getElementById('g').getAttribute('aria-label') ?? '',
+          ),
+        null,
+        14000,
+      ),
+      await a.getAttribute('#g', 'aria-label'),
+    );
+    // a stop (twice: a fatal error, then another): the page and the open detail greyed, one "as of" on each heading
+    await emit(a, 'block', { ...blk(H), req: await reqFor(a, H) });
+    await a.click('#mined .blk');
+    await until(a, () => !document.getElementById('detail').hidden);
+    await emit(a, 'error', { text: 'stopped once', fatal: true });
+    await emit(a, 'error', { text: 'stopped twice', fatal: true });
+    await a.waitForTimeout(300);
+    const st = await a.evaluate(() => ({
+      main: document.querySelector('main').classList.contains('stopped'),
+      detailGrey: getComputedStyle(document.getElementById('detail')).filter,
+      asof: ['blocks-h', 'mp-h'].map((id) => document.getElementById(id).querySelectorAll('.asof').length),
+      title: document.querySelector('#dtitle')?.textContent ?? '',
+    }));
+    t(
+      'a stop greys the page and the open detail, and says "as of" once on each heading and in the detail’s title, however many stops',
+      st.main && /grayscale/.test(st.detailGrey) && st.asof.every((x) => x === 1) && (st.title.match(/as of/g) ?? []).length === 1,
+      JSON.stringify(st),
+    );
+    t('no page errors in round 7’s faults and stops', !p.errors.length, p.errors.join(' | '));
+    await p.ctx.close();
+  }
+  {
+    // a wipe that fails: the page greyed as a stop
+    const p = await profile({ 'reef:started': '1' }, { config: { wipeFail: true } });
+    const a = await p.open();
+    await until(a, () => window.__fake.starts === 1);
+    await emit(a, 'synced', { height: 152101, hash: 'ee'.repeat(32), applied: 1 });
+    await a.click('#settings');
+    await a.click('#o-wipe');
+    await a.click('#o-wipe');
+    t('a failed wipe greys the page as a stop', await until(a, () => document.querySelector('main').classList.contains('stopped')));
+    await p.ctx.close();
+  }
+  {
+    // "Not now": the mempool panel and the table say not started, the figures are "—"; the empty next tile opens its own words
+    const p = await profile();
+    const a = await p.open();
+    await until(a, () => !!document.querySelector('#welcome[open]'));
+    await a.click('#wl-later');
+    t(
+      'after "Not now" the transactions table says the node is not started, and the mempool figures are "—", not "…"',
+      (await until(a, () => /not started: start the node/.test(document.getElementById('rows').textContent))) &&
+        (await a.evaluate(() => ['m-count', 'm-size', 'm-fees'].every((id) => document.getElementById(id).textContent === '—'))),
+      (await text(a, '#rows')) + ' | ' + (await text(a, '#m-count')),
+    );
+    await a.click('#proj .blk');
+    t(
+      'the empty next tile opens with its own words, not a block of 0 tx',
+      (await until(a, () => /not started/.test(document.getElementById('detail').textContent))) && !/0 tx/.test(await text(a, '#detail')),
+      await text(a, '#detail'),
+    );
+    await p.ctx.close();
+  }
+  {
+    // a refused lock: the status bar says so too
+    const p = await profile({}, { config: { lockError: 'the lock manager is unavailable' } });
+    const a = await p.open();
+    await until(a, () => !!document.querySelector('#welcome[open]'));
+    await a.click('#wl-start');
+    t(
+      'a refused lock: the status bar says the node is not started, not "Starting…"',
+      await until(a, () => /not started: the browser refused the lock/.test(document.getElementById('syncmsg').textContent)),
+      await text(a, '#syncmsg'),
+    );
+    await p.ctx.close();
+  }
+  for (const [w, h] of [
+    [800, 600],
+    [1024, 768],
+  ]) {
+    // between a phone and a wide screen: no sideways scroll, and no focused control hidden under the header or the status bar
+    const p = await profile({ 'reef:started': '1' });
+    const a = await p.open();
+    await a.setViewportSize({ width: w, height: h });
+    await until(a, () => window.__fake.starts === 1);
+    await emit(a, 'mempool', mp(Array.from({ length: 60 }, (_, i) => mtx('4', i, 2 + (i % 7)))));
+    await emit(a, 'synced', { height: 152900, hash: hx(152900), applied: 1 });
+    await until(a, () => document.querySelectorAll('#rows tr').length >= 30);
+    const hidden = [];
+    for (let i = 0; i < 90; i++) {
+      await a.keyboard.press('Tab');
+      const r = await a.evaluate(() => {
+        const el = document.activeElement;
+        if (!el || el === document.body) return null;
+        const b = el.getBoundingClientRect(),
+          top = document.querySelector('.top').getBoundingClientRect(),
+          foot = document.querySelector('.status').getBoundingClientRect();
+        const sticky = getComputedStyle(document.querySelector('.top')).position === 'sticky';
+        const under = (sticky && b.bottom <= top.bottom) || b.top >= foot.top;
+        return under && !el.closest('.top, .status') ? `${el.tagName}#${el.id}.${el.className}` : null;
+      });
+      if (r) hidden.push(r);
+    }
+    const wide = await a.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    t(
+      `at ${w}×${h} the page does not scroll sideways, and no focused control is hidden under the header or the status bar`,
+      wide <= 0 && !hidden.length,
+      `sideways ${wide}; hidden ${hidden.slice(0, 4).join(', ')}`,
+    );
+    await p.ctx.close();
+  }
+  {
+    // the policy is in force, not just written: eval is refused, and an inline script injected later raises a violation
+    const p = await profile({ 'reef:started': '1' });
+    const a = await p.open();
+    const r = await a.evaluate(async () => {
+      // eval-like code run by the page itself (a string timer: devtools' own evaluation is not under the page's policy)
+      const blocked = [];
+      document.addEventListener('securitypolicyviolation', (e) => blocked.push(e.blockedURI));
+      setTimeout('window.__evaled = 1', 0);
+      await new Promise((r) => setTimeout(r, 300));
+      const evalRefused = window.__evaled !== 1 && blocked.includes('eval');
+      const violated = new Promise((res) => {
+        document.addEventListener('securitypolicyviolation', (e) => e.blockedURI === 'inline' && res(true));
+        setTimeout(() => res(false), 1500);
+      });
+      const sc = document.createElement('script');
+      sc.textContent = 'window.__injected = 1';
+      document.head.append(sc);
+      return { evalRefused, violated: await violated, ran: window.__injected === 1 };
+    });
+    t(
+      'the security policy is in force: eval refused, an injected inline script refused with a violation',
+      r.evalRefused && r.violated && !r.ran,
+      JSON.stringify(r),
+    );
+    await p.ctx.close();
+  }
+}
 await browser.close();
 console.log(`\n${ok} passed, ${bad} failed`);
 process.exit(bad ? 1 : 0);

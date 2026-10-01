@@ -1366,4 +1366,97 @@ t(
       SC.parseQuery('01').height === undefined,
   );
 }
+// ---- round 7: what a block takes is known in the order transactions left the pool, and the boundaries mutation testing found
+{
+  // the reviewer's shape: 12,000 long-waiting transactions (the first inserted), 9,000 churned through, then a block takes
+  // 3,000 of the long-waiting ones: eviction (oldest first) goes in order of leaving, so those 3,000 are kept
+  const txN = (i) => ({ txid: 'x' + i, fee: 300, vsize: 150, feeRate: 2, at: 1000 + i });
+  const seen = new Map();
+  const old = Array.from({ length: 12000 }, (_, i) => txN(i));
+  SE.rememberSeen(seen, old);
+  let next = 50000;
+  for (let k = 0; k < 9; k++) SE.rememberSeen(seen, [...old, ...Array.from({ length: 1000 }, () => txN(next++))]);
+  SE.rememberSeen(seen, old);
+  const block = { txids: ['cb', ...old.slice(0, 3000).map((x) => x.txid)], nTx: 3001 };
+  SE.rememberSeen(seen, [...old.slice(3000), ...Array.from({ length: 1000 }, () => txN(next++))]);
+  const s = SE.blockSeen(block, seen, { followedAt: 1, arrival: { at: 10, alone: true }, prevArrival: { at: 5 } });
+  t(
+    'a block of long-waiting transactions is still known after a churning pool: 3,000 of 3,000 seen first',
+    s.seen === 3000 && s.others === 3000,
+    `${s.seen} of ${s.others}`,
+  );
+  // the default margin is half the cap: 15,000 listed and 12,000 gone, over the limit of 25,000, evicts down to 20,000
+  const m = new Map();
+  const listed = Array.from({ length: 15000 }, (_, i) => txN(100000 + i));
+  SE.rememberSeen(m, [...listed, ...Array.from({ length: 12000 }, (_, i) => txN(200000 + i))]);
+  SE.rememberSeen(m, listed);
+  t(
+    'the default margin keeps half the cap of gone transactions beyond the listed (evicted to 25,000 less 5,000)',
+    m.size === 20000,
+    String(m.size),
+  );
+}
+{
+  // a clock stepped back (an NTP correction after waking): the throttle never waits longer than its interval
+  let clock = 1_000_000;
+  const delays = [];
+  const set = (f, ms) => {
+    delays.push(ms);
+    f();
+  };
+  const go = SD.throttle(() => {}, 2000, { now: () => clock, set });
+  go();
+  clock -= 3_600_000;
+  go();
+  t(
+    'the throttle never waits longer than its interval when the clock steps back',
+    delays.length === 2 && delays[1] === 2000,
+    delays.join(','),
+  );
+}
+{
+  const mp = { count: 3, bytes: 300, txs: [tx('a', 100, 2), tx('b', 100, 3), tx('c', 100, 4)] };
+  const given = P.mempoolList(mp);
+  t(
+    'coverage reads the list it is given (computed once per frame)',
+    P.coverage(mp, given).shown === 3 && P.coverage(mp, given.slice(0, 1)).shown === 1,
+  );
+}
+t(
+  'a later year is newer whatever the month and day',
+  VS.newer('2027-01-01.1', '2026-12-31.9') && !VS.newer('2026-12-31.9', '2027-01-01.1'),
+);
+{
+  const b = { height: 152103, size: 617, nTx: 2 };
+  t(
+    'a header exactly as old as now reads "0 s ago", never "ahead"',
+    /header 0 s ago/.test(V.minedTile(b, { ageS: 0, ageFrom: 'header' }).label) &&
+      !/ahead/.test(V.minedTile(b, { ageS: 0, ageFrom: 'header' }).label),
+    V.minedTile(b, { ageS: 0, ageFrom: 'header' }).label,
+  );
+}
+{
+  const det = V.blockDetail(
+    { height: 7, hash: id('h'), time: 100, nTx: 3, size: 900, txids: [id('c'), id('b'), id('d')] },
+    {
+      sw: { counted: false, words: 'x', seen: 0, others: 2, knownCount: 0, knownFees: 0 },
+      seenTx: new Map(),
+      signedWords: 'x',
+      foundTxid: id('b'),
+    },
+  );
+  t(
+    "only the found transaction's row is highlighted",
+    (det.match(/class="hi"/g) ?? []).length === 1 && new RegExp(`data-t="${id('b')}" class="hi"`).test(det),
+  );
+}
+{
+  const at = (quietS) => ST.chainState({ time: 1000, synced: true, lastSync: 1000e3 + quietS * 1000 }, { now: (1000 + quietS) * 1000 });
+  t(
+    'no new block for exactly 90 minutes is not yet a warning; a second more is',
+    at(5400).short !== 'no new block' && at(5401).short === 'no new block',
+    `${at(5400).short} / ${at(5401).short}`,
+  );
+}
+
 done();
