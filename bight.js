@@ -5,7 +5,7 @@
 // The decisions (packing, bands, what was seen first, the chain cache, search, the status words, the sources, the
 // settings, the markup of tiles and details) are lib/*.mjs, tested; this file wires them to the document, patching in
 // place so a focused or selected element survives the next update.
-export const VERSION = '2026-10-01.14';
+export const VERSION = '2026-10-01.15';
 const $ = (id) => document.getElementById(id);
 const NODE = 'https://cdn.jsdelivr.net/gh/bitcoin-blake/blaketestnode@f1da4a6b64a6a9a6f791d2e5dea8a1c1be81ea09';
 const RELAYS = [
@@ -316,6 +316,7 @@ const state = {
   announcedSync: false,
   afterGap: false, // a gap in listening was seen (the timer late, online again, a frozen tab resumed): the next sync is a catch-up
   notStarted: false, // "Not now" on the welcome: nothing runs until Start
+  refused: false, // the browser refused the lock (or has no Web Locks): nothing runs until Run anyway
   following: false,
   running: false,
   idle: false,
@@ -327,6 +328,10 @@ const now = () => Math.floor(Date.now() / 1000);
 // the mempool as a list, computed once per state the node sends
 let listOf = null,
   listMemo = [];
+// nothing is coming until the person acts: not started, or the lock refused
+const notRunning = () => state.notStarted || state.refused;
+// the mempool in words when it shows nothing, with why nothing is coming
+const emptyOf = (mp) => ST.emptyWords(mp, { following: state.following, notStarted: state.notStarted, refused: state.refused });
 const list = () => {
   if (node.mempool !== listOf) {
     listOf = node.mempool;
@@ -418,9 +423,13 @@ tn.on('message', (m) => {
     // nothing is open for that height any more: a later reorganisation does not bring the abandoned search back
     if (state.openFound === h) state.openFound = null;
     // a fault in the node's files is not "no such block": it says so and points at the notice the loader's error raised
+    // "Block not found" is the node's own word for a height it has not; a fault in its files points at the notice; any
+    // other failure (a decode error, a timeout) is said as it is, not taken for a missing block
     const words = ST.isStorageFault(m)
       ? `block ${esc(n(h))} could not be read: ${esc(ST.FILES_FAILED)}`
-      : `the node has no block ${esc(n(h))} on its chain now (a reorganisation or a rollback may have just changed it); search again`;
+      : /Block not found/.test(m.text ?? '')
+        ? `the node has no block ${esc(n(h))} on its chain now (a reorganisation or a rollback may have just changed it); search again`
+        : `block ${esc(n(h))} could not be read: ${esc(ST.plainError(m.text, m.name))}`;
     openDetail(`<h2 id="dtitle">Block ${esc(n(h))}</h2><p class="mut">${words}</p>`, { kind: 'q' }, { focus: false });
   }
 });
@@ -584,6 +593,7 @@ function renderAll() {
   renderMined();
   centreRow();
   pill();
+  refreshTx(); // the projected blocks were just packed again
 }
 // the next block and the chain tip in view: the row of tiles is scrolled to the divider between them when it first
 // overflows and whenever the number of projected tiles changes, until the person scrolls the row themselves
@@ -649,7 +659,7 @@ function renderProjected(blocks) {
     // the same key as the full next block, so the focus stays on it when the mempool empties or fills
     const e = V.emptyNextTile({
       built: !!node.mempool && tw.ok,
-      words: ST.emptyWords(node.mempool, { following: state.following, notStarted: state.notStarted }) ?? 'the mempool is empty',
+      words: emptyOf(node.mempool) ?? 'the mempool is empty',
     });
     items.push({
       key: 'p0',
@@ -705,7 +715,7 @@ function renderMined() {
         key: 'empty',
         cls: 'blk empty',
         tag: 'div',
-        html: `<span class="h">last blocks</span><span class="s">${node.synced ? 'asking the node for the last blocks…' : 'appear once the tab is up to date'}</span>`,
+        html: `<span class="h">last blocks</span><span class="s">${node.synced ? 'asking the node for the last blocks…' : notRunning() ? 'not started' : 'appear once the tab is up to date'}</span>`,
       },
     ]);
     return;
@@ -867,8 +877,10 @@ function renderMempool(blocks) {
   const m = node.mempool;
   if (!m) {
     // no mempool yet: the table says why, and the figures are "—" when nothing is coming (not started), "…" while it is
-    const words = ST.emptyWords(null, { following: state.following, notStarted: state.notStarted });
-    for (const id of ['m-count', 'm-size', 'm-fees', 'm-med', 'm-next']) $(id).textContent = state.notStarted ? '—' : '…';
+    const words = emptyOf(null);
+    for (const id of ['m-count', 'm-size', 'm-fees', 'm-med', 'm-next']) $(id).textContent = notRunning() ? '—' : '…';
+    // where it comes from: nothing is asked while nothing runs
+    if (notRunning()) for (const id of ['s-relays', 's-seed', 's-feed', 's-feedtx']) $(id).textContent = '—';
     $('rows').innerHTML = `<tr><td colspan="6" class="mut">${esc(words)}</td></tr>`;
     return;
   }
@@ -930,7 +942,7 @@ function renderRows(all, blocks) {
   const t0 = now();
   const rows = [...all].sort((a, b) => b.at - a.at).slice(0, 300);
   if (!rows.length) {
-    tb.innerHTML = `<tr><td colspan="6" class="mut">${esc(ST.emptyWords(node.mempool, { following: state.following, notStarted: state.notStarted }) ?? 'empty')}</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="6" class="mut">${esc(emptyOf(node.mempool) ?? 'empty')}</td></tr>`;
     return;
   }
   // what is no longer listed goes first (but not a row holding the focus), so the walk moves only what is out of order
@@ -991,16 +1003,29 @@ function openTx(txid, opener) {
 }
 // a mempool transaction from the node's whole copy, with where it would go; shown again when that copy changes what it
 // says (a node's mempool took it: "fed")
-function showTx(tx, opener, { focus = true } = {}) {
+function showTx(tx, opener, { focus = true, keepPending = false } = {}) {
   const block = P.blockIndex(state.lastBlocks ?? []).get(tx.txid) ?? null;
-  openDetail(V.mempoolTxDetail(tx, { block, spacing: spacing() }), opener, { focus });
-  state.openTx = { txid: tx.txid, opener, fed: !!tx.fed };
+  openDetail(V.mempoolTxDetail(tx, { block, spacing: spacing() }), opener, { focus, keepPending });
+  state.openTx = { txid: tx.txid, opener, fed: !!tx.fed, block, tx };
 }
+// the open transaction kept true to the mempool: drawn again when a node's mempool takes it (fed) or its projected block
+// changes, and replaced when it leaves the mempool (mined into a block this tab holds, or dropped). Looked up in the whole
+// list, not the first thousand the node sends in full
 function refreshTx() {
   const o = state.openTx;
   if (!o || $('detail').hidden) return;
-  const full = (node.mempool?.txs ?? []).find((x) => x.txid === o.txid);
-  if (full && !!full.fed !== o.fed) showTx(full, o.opener, { focus: false });
+  const now = list().find((x) => x.txid === o.txid);
+  if (!now) {
+    const h = [...state.blocks].find(([, b]) => b.txids?.includes(o.txid))?.[0] ?? null;
+    if (o.goneAt != null && o.goneIn === h) return;
+    const goneAt = o.goneAt ?? Date.now();
+    openDetail(V.txLeftDetail(o.txid, goneAt, h), o.opener, { focus: false, keepPending: true });
+    state.openTx = { ...o, goneAt, goneIn: h };
+    return;
+  }
+  const tx = { ...o.tx, fed: !!now.fed };
+  const block = P.blockIndex(state.lastBlocks ?? []).get(o.txid) ?? null;
+  if (o.goneAt != null || tx.fed !== o.fed || block !== o.block) showTx(tx, o.opener, { focus: false, keepPending: true });
 }
 function onMempoolTx(m) {
   if (m.req !== 'bight' || state.pendingTx?.txid !== m.txid) return;
@@ -1063,11 +1088,18 @@ function drawGraph() {
     g.fillStyle = cv('--mut', '#8d92ab');
     g.font = `${12 * devicePixelRatio}px system-ui,sans-serif`;
     g.fillText(
-      state.idle ? 'the graph runs where the node runs' : 'collecting: a point every 5 s',
+      state.idle
+        ? 'the graph runs where the node runs'
+        : notRunning()
+          ? 'not started: the graph runs once the node does'
+          : 'collecting: a point every 5 s',
       8 * devicePixelRatio,
       20 * devicePixelRatio,
     );
-    c.setAttribute('aria-label', 'Mempool over time: collecting, a point every 5 seconds');
+    c.setAttribute(
+      'aria-label',
+      notRunning() ? 'Mempool over time: not started' : 'Mempool over time: collecting, a point every 5 seconds',
+    );
     return;
   }
   const pad = 6 * devicePixelRatio;
@@ -1432,7 +1464,10 @@ function goIdle() {
 }
 function lockFailed(err) {
   $('syncmsg').textContent = 'not started: the browser refused the lock';
+  state.refused = true;
   pill();
+  scheduleRender();
+  drawGraph();
   banner(
     'lockfail',
     'bad',
@@ -1455,6 +1490,7 @@ async function startNode(force = false) {
   // asked first, always: no node starts (and nothing is downloaded) without the person's go
   if (!(LS.get('reef:started') || LS.get('bight:started'))) return welcome(force);
   state.notStarted = false;
+  state.refused = false;
   pill();
   if (!navigator.locks && !force) {
     node.lockError = 'this browser has no Web Locks';
@@ -1480,7 +1516,7 @@ async function startNode(force = false) {
         );
     }, 60e3);
   } catch (e) {
-    fatal(ST.plainError(e.message));
+    fatal(ST.plainError(e.message, e.name));
   }
 }
 async function welcome(force = false) {
@@ -1511,6 +1547,7 @@ async function welcome(force = false) {
     state.notStarted = true;
     pill();
     scheduleRender();
+    drawGraph();
     $('syncmsg').textContent = 'not started: nothing is downloaded until you choose Start';
     banner('welcome', 'info', 'The node is not started. Nothing is downloaded until you start it.', [
       ['Start the node…', () => $('welcome').showModal()],

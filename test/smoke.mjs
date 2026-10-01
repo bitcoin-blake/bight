@@ -179,6 +179,17 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
     said && /lock refused/.test(await text(a, '#pilltxt')) && (await a.getAttribute('#pilldot', 'class')) === 'bad',
     await text(a, '#pilltxt'),
   );
+  // nothing runs: the page says not started everywhere, not that it is loading
+  await until(a, () => /refused the lock/.test(document.getElementById('proj').textContent));
+  t(
+    'with the lock refused the page reads not started: the next block, the figures, the last blocks, the sources, the graph',
+    /not started: the browser refused the lock/.test(await text(a, '#proj')) &&
+      (await text(a, '#m-count')) === '—' &&
+      /not started/.test(await text(a, '#mined')) &&
+      (await text(a, '#s-relays')) === '—' &&
+      /not started/.test((await a.getAttribute('#g', 'aria-label')) ?? ''),
+    [await text(a, '#proj'), await text(a, '#m-count'), await text(a, '#mined'), await text(a, '#s-relays')].join(' | '),
+  );
   await a.click('#banners [data-b=lockfail] button');
   t('"Run anyway in this tab" starts the node without the lock', await until(a, () => window.__fake.forced === 1));
   t('no page errors with a refused lock', !p.errors.length, p.errors.join(' | '));
@@ -1608,6 +1619,16 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
         )),
       await text(a, '#m-next'),
     );
+    // a search met by another failure (a decode error, a timeout): said as it is, not taken for a missing block
+    await a.click('#dclose').catch(() => {});
+    const rx = await search(a, H - 35);
+    await emit(a, 'error', { text: 'Unexpected end of block data', name: 'RangeError', req: rx });
+    t(
+      'a search met by another failure says the block could not be read and why, not that the chain has no such block',
+      (await until(a, () => /could not be read/.test(document.getElementById('detail').textContent))) &&
+        !/has no block|files failed/.test(await text(a, '#detail')),
+      await text(a, '#detail'),
+    );
     // an abandoned search, not found: a reorganisation over that height does not bring it back
     await a.click('#dclose').catch(() => {});
     const r2 = await search(a, H - 40);
@@ -1775,6 +1796,49 @@ const text = (page, sel) => page.textContent(sel).catch(() => '');
     );
     await p.ctx.close();
   }
+}
+// an open mempool transaction that is mined: the detail follows it out of the mempool and names the block; one whose
+// projected block changes is drawn again
+{
+  const p = await profile({ 'reef:started': '1' });
+  const a = await p.open();
+  await until(a, () => window.__fake.starts === 1);
+  const T = Math.floor(Date.now() / 1000);
+  const hx = (h) => h.toString(16).padStart(64, '0');
+  const blkT = (h, time, txids = []) => ({
+    height: h,
+    hash: hx(h),
+    previousblockhash: hx(h - 1),
+    size: 400,
+    nTx: txids.length + 1,
+    header: { time },
+    txids: ['00'.repeat(32), ...txids],
+    coinbaseValue: 5e9 + 1234,
+  });
+  await emit(a, 'synced', { height: 152100, hash: hx(152100), applied: 1 });
+  await until(a, () => window.__fake.posts.filter((m) => m.type === 'block').length >= 8);
+  for (let h = 152093; h <= 152100; h++) await reply(a, blkT(h, T - (152100 - h) * 600));
+  const t1 = mtx('7', 1, 5),
+    t2 = mtx('7', 2, 2);
+  await emit(a, 'mempool', mp([t1, t2]));
+  await until(a, () => !!document.querySelector('button[data-open]'));
+  await a.click(`button[data-open="${t1.txid}"]`);
+  await until(a, () => /In this tab.s mempool/.test(document.getElementById('dtitle')?.textContent ?? ''));
+  await emit(a, 'synced', { height: 152101, hash: hx(152101), applied: 1 });
+  await emit(a, 'mempool', mp([t2], { height: 152101 }));
+  t(
+    'an open transaction that leaves the mempool is said to have left, not left saying "in the next block"',
+    await until(a, () => /Left this tab.s mempool/.test(document.getElementById('dtitle')?.textContent ?? '')),
+    await text(a, '#detail'),
+  );
+  await reply(a, blkT(152101, T, [t1.txid]));
+  t(
+    '…and once the block that lists it is held, the detail names that block',
+    await until(a, () => /confirmed in block 152,101/.test(document.getElementById('detail').textContent)),
+    await text(a, '#detail'),
+  );
+  t('no page errors following a transaction out of the mempool', !p.errors.length, p.errors.join(' | '));
+  await p.ctx.close();
 }
 await browser.close();
 console.log(`\n${ok} passed, ${bad} failed`);

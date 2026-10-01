@@ -54,15 +54,18 @@ const cspDiff = (text, want) => {
   return out.join('; ');
 };
 const cspMatches = (text, want) => cspDiff(text, want) === '';
+// what the browser reads as markup: a comment is not a policy, whatever it holds
+const live = (page) => page.replace(/<!--[\s\S]*?-->/g, '');
 // the policy meta sits in <head>, before the first <script (a meta policy governs only what is parsed after it)
-const cspPlaced = (page) => {
+const cspPlaced = (raw) => {
+  const page = live(raw);
   const head = page.search(/<head[\s>]/i),
     endHead = page.search(/<\/head>/i),
     meta = page.search(/<meta[^>]+http-equiv="Content-Security-Policy"/i),
     script = page.search(/<script[\s>]/i);
   return head >= 0 && meta > head && (endHead < 0 || meta < endHead) && (script < 0 || meta < script);
 };
-const cspOf = (page) => page.match(/Content-Security-Policy" content="([^"]+)"/)?.[1] ?? '';
+const cspOf = (page) => live(page).match(/Content-Security-Policy" content="([^"]+)"/)?.[1] ?? '';
 const policy = parseCsp(csp);
 const scriptSrc = [...(policy['script-src'] ?? [])],
   workerSrc = [...(policy['worker-src'] ?? [])];
@@ -133,6 +136,10 @@ t(
       `${realScript} https://evil.example/ https://cdn.jsdelivr.net/npm/ https://*.jsdelivr.net`,
     ),
     'default-src and object-src deleted': html.replace("default-src 'self'; ", '').replace("object-src 'none'; ", ''),
+    'the policy inside a comment, none in force': html.replace(
+      /<meta[^>]+http-equiv="Content-Security-Policy"[^>]*>/i,
+      (m) => `<!-- ${m} -->`,
+    ),
   };
   const passes = (page) => cspPlaced(page) && cspMatches(cspOf(page), WANT);
   t('the real page passes the policy checks', passes(html));

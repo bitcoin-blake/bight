@@ -8,7 +8,7 @@
 <meta name="description" content="A mempool monitor in a browser tab for txbt4, the BLAKE2b testnet4: every transaction shown was validated by the tab's own node, and the next block is the one this tab would build.">
 <meta property="og:site_name" content="Bight"><meta property="og:title" content="Bight · a mempool in a tab"><meta property="og:description" content="A mempool monitor that validates every transaction itself, in the browser. The next block on the page is the one this tab would build. BLAKE2b testnet4."><meta property="og:type" content="website"><meta property="og:url" content="https://bitcoin-blake.github.io/bight/"><meta property="og:image" content="https://bitcoin-blake.github.io/bight/og.png"><meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23171a2b'/%3E%3Cpath d='M6 22c4-10 8-10 10 0s6 10 10 0' fill='none' stroke='%23f0a04b' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
-<script src="theme.js?v=2026-10-01.14"></script>
+<script src="theme.js?v=2026-10-01.15"></script>
 <style>
 :root {
   color-scheme: dark;
@@ -46,6 +46,9 @@ a { color:var(--blue) } a:hover { text-decoration:none }
 .top { display:flex; align-items:center; gap:14px; padding:10px 18px; border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:5 }
 .top .brand { display:flex; align-items:center; gap:10px; font-weight:700; font-size:17.5px; letter-spacing:.2px; margin:0 }
 .top .brand span { color:var(--mut); font-weight:400; font-size:12.5px }
+/* the logo never shrinks; the subtitle never wraps, and is left out until there is room for it on one line */
+.top .brand svg { flex:none } .top .brand span { white-space:nowrap }
+@media (max-width:1280px) { .top .brand span { display:none } }
 .top .fill { flex:1 }
 
 .pill { display:inline-flex; align-items:center; gap:7px; padding:5px 12px; border-radius:999px; background:var(--panel2); border:1px solid var(--line); font-size:12.5px; white-space:nowrap; font-variant-numeric:tabular-nums }
@@ -206,6 +209,6 @@ body.embedded .top .brand span { display:none }
   <div class="note">Bight, Reef, Winch and Hitch share this site's storage, so one copy of the node's files serves all four, and one tab runs the node. Source: <a href="https://github.com/bitcoin-blake/bight" target="_blank" rel="noopener">github.com/bitcoin-blake/bight</a>.</div>
 </div><div class="f"><button class="btn" id="o-reset" type="button" style="margin-right:auto">Reset to defaults</button><button class="btn" id="o-cancel" type="button">Cancel</button><button class="btn" id="o-ok" type="button">OK</button></div></dialog>
 <dialog id="welcome" aria-labelledby="wl-t" aria-describedby="wl-d"><div class="t" id="wl-t">Welcome to Bight</div><div class="b"><p id="wl-d" style="margin:0">To show the mempool, this tab runs a node: it downloads the chain's state at block <span id="wl-base">150,307</span> (<b id="wl-size">870 MB</b>), checks it, and validates every block since. That takes a few minutes on a fast connection and longer on a slow one; it is kept for next time (and shared with Reef, Winch and Hitch), and resumes if interrupted. Avoid starting on a metered connection.</p><p id="wl-space" class="note" style="margin:0"></p></div><div class="f"><button class="btn" id="wl-later" type="button">Not now</button><button class="btn" id="wl-start" type="button">Start</button></div></dialog>
-<script type="module" src="bight.js?v=2026-10-01.14"></script>
+<script type="module" src="bight.js?v=2026-10-01.15"></script>
 </body>
 </html>

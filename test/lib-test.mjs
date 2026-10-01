@@ -319,7 +319,8 @@ t('the hue runs from blue at 1 to orange at 1000', F.feeHue(1) === 210 && F.feeH
     'the span is said in minutes, then hours',
     SR.spanWords([{ t: T0 }, { t: T0 + 30 * 60000 }]) === 'the last 30 minutes' &&
       SR.spanWords([{ t: T0 }, { t: T0 + 3 * 3600000 }]) === 'the last 3.0 hours' &&
-      SR.spanWords([{ t: T0 }]) === 'this session',
+      SR.spanWords([{ t: T0 }]) === 'this session' &&
+      SR.spanWords([{ t: T0 }, { t: T0 - 3600000 }]) === 'the last 0 s',
   );
 }
 // ---- words
@@ -1468,4 +1469,27 @@ t(
     ST.plainError('Failed to fetch', null).startsWith('The node’s source could not be reached') &&
     ST.plainError('opaque', 'SomeOtherError') === 'opaque',
 );
+{
+  // the clock stepped back: the series starts again (points out of order would draw off the box), and its span is never negative
+  const s = [];
+  for (let i = 0; i < 10; i++) SR.pushSample(s, { t: 1.7e12 + i * 5000, count: i, vb: i });
+  SR.pushSample(s, { t: 1.7e12 - 3600000, count: 1, vb: 1 });
+  SR.pushSample(s, { t: 1.7e12 - 3595000, count: 2, vb: 2 });
+  t('a sample earlier than the last starts a new series (the clock stepped back)', s.length === 2 && s[0].t === 1.7e12 - 3600000);
+  t('…and its span reads forward', SR.spanWords(s) === 'the last 5 s');
+}
+t(
+  'a refused lock is said as not started, with where the reason is',
+  ST.emptyWords(null, { refused: true }) === 'not started: the browser refused the lock (see the notice above)' &&
+    ST.emptyWords(null, { refused: true, notStarted: true }).includes('refused') &&
+    ST.emptyWords({ count: 1, stats: { seen: 1 } }, { refused: true }) === null,
+);
+{
+  const mined = V.txLeftDetail('ab'.repeat(32), 1.7e12, 152101),
+    gone = V.txLeftDetail('ab'.repeat(32), 1.7e12);
+  t(
+    'a transaction that left the mempool: the block that lists it when held, else confirmed or dropped',
+    /Left this tab.s mempool/.test(mined) && /confirmed in block 152,101/.test(mined) && /confirmed or dropped/.test(gone),
+  );
+}
 done();
