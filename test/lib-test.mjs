@@ -1459,4 +1459,13 @@ t(
   );
 }
 
+t(
+  'a node error is worded by its kind (node.errorName) before its text: files gone, another tab, storage refused',
+  /gone or unreadable/.test(ST.plainError('an opaque browser message', 'NotFoundError')) &&
+    /gone or unreadable/.test(ST.plainError('x', 'NotReadableError')) &&
+    ST.plainError('x', 'NoModificationAllowedError').startsWith('Another tab') &&
+    /1.2 GB/.test(ST.plainError('x', 'QuotaExceededError')) &&
+    ST.plainError('Failed to fetch', null).startsWith('The node’s source could not be reached') &&
+    ST.plainError('opaque', 'SomeOtherError') === 'opaque',
+);
 done();

@@ -1,5 +1,5 @@
 // A stand-in for blaketestnode's browser/tabnode.js, the page's only seam to the node: the smoke test serves it in place of
-// the pinned file and drives the page with window.__fake.emit(type, message). Like the real loader (at bff010d), it keeps
+// the pinned file and drives the page with window.__fake.emit(type, message). Like the real loader (at 670ad2b), it keeps
 // node.* from the messages before the page sees them, emits every message on 'message' too, holds the shared node lock in
 // start() (or reports node.lockError when the browser refuses it), answers mempool-get with mempool-tx from what it was
 // last sent, and clears node.unresponsive on 'responsive'. window.__fake records the options the page created it with,
@@ -45,15 +45,16 @@ export function createTabNode(opts = {}) {
         st: node.st ?? {},
       });
     if (t === 'nostr') node.nostr = m;
-    if (t === 'unresponsive') Object.assign(node, { unresponsive: true, error: 'the node has not answered for two minutes' });
-    if (t === 'responsive') Object.assign(node, { unresponsive: false, error: null });
-    // as the loader at bff010d: an error answering a request (it echoes req, or names a lookup) is not the node's state,
+    if (t === 'unresponsive')
+      Object.assign(node, { unresponsive: true, error: 'the node has not answered for two minutes', errorName: null });
+    if (t === 'responsive') Object.assign(node, { unresponsive: false, error: null, errorName: null });
+    // as the loader at 670ad2b: an error answering a request (it echoes req, or names a lookup) is not the node's state,
     // unless it is a fault in the node's files (storageFault, by the error's name): that is the node's, whoever asked
     if (
       t === 'error' &&
       !(node.synced && !storageFault(m) && (m.req != null || /Block not found|sync first|not in the set|not in mempool/.test(m.text)))
     )
-      node.error = m.text;
+      Object.assign(node, { error: m.text, errorName: m.name ?? null }); // the error's kind beside its text, as the loader at 670ad2b
     fire(t, m);
     fire('message', { type: t, ...m });
   };

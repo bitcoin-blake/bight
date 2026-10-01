@@ -284,6 +284,13 @@ t(
     `pinned ${pinned}; page ${[...ST.STORAGE_FAULTS].sort()}; fake ${names(fakeSrc)}`,
   );
 }
+// the error's kind beside its text: the loader keeps node.errorName with node.error (the page words a fault in the files by it)
+t(
+  'the loader keeps the error’s kind (node.errorName) with its text, as the page reads it',
+  /if \(!lookup\) \{ node\.error = m\.text; node\.errorName = m\.name \?\? null;/.test(tabnode) &&
+    /node\.errorName/.test(src) &&
+    /errorName: m\.name \?\? null/.test(readFileSync(new URL('./fake/tabnode.js', import.meta.url), 'utf8')),
+);
 // a wipe that leaves no node running: the loader says so the way the page reads it (phase 'error', a fatal error message,
 // on 'error' and on 'message')
 t(

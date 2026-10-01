@@ -5,9 +5,9 @@
 // The decisions (packing, bands, what was seen first, the chain cache, search, the status words, the sources, the
 // settings, the markup of tiles and details) are lib/*.mjs, tested; this file wires them to the document, patching in
 // place so a focused or selected element survives the next update.
-export const VERSION = '2026-10-01.12';
+export const VERSION = '2026-10-01.13';
 const $ = (id) => document.getElementById(id);
-const NODE = 'https://cdn.jsdelivr.net/gh/bitcoin-blake/blaketestnode@bff010d02077f62f91ce7e812837cd920f514041';
+const NODE = 'https://cdn.jsdelivr.net/gh/bitcoin-blake/blaketestnode@670ad2bd5ae67d9f99c6c24c8fc5f3eb2b3e2b5b';
 const RELAYS = [
   'wss://relay.primal.net',
   'wss://nostr.oxtr.dev',
@@ -361,7 +361,7 @@ function pill() {
   if (node.unresponsive) banner('slow', 'warn', ST.plainError('not answered for two minutes'), [['Reload', () => location.reload()]]);
   else unbanner('slow');
   if (node.error && !state.idle && !node.unresponsive && !fatalShown())
-    banner('nodeerr', 'bad', ST.plainError(node.error), [['Reload', () => location.reload()]]);
+    banner('nodeerr', 'bad', ST.plainError(node.error, node.errorName), [['Reload', () => location.reload()]]);
   else unbanner('nodeerr');
   const c = node.synced ? ST.chainState(node) : null;
   if (c && (c.level === 'warn' || c.level === 'bad')) banner('chain', c.level === 'bad' ? 'bad' : 'warn', c.text);
@@ -400,7 +400,7 @@ tn.on('message', (m) => {
   // a wipe that left no node running (the loader says so as a fatal error): nothing more is asked of it
   if (m.type === 'error' && m.fatal) {
     state.running = false;
-    fatal(ST.plainError(m.text));
+    fatal(ST.plainError(m.text, m.name));
   }
   if (m.type === 'responsive' || m.type === 'unresponsive' || m.type === 'error') pill();
   if (m.type === 'mempool-tx') onMempoolTx(m);
